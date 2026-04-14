@@ -1,0 +1,6 @@
+{
+  "name": "경영공시 정보 추출",
+  "description": "Extracts specific financial tables from PDF documents and converts them to JSON format without using AI models.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
