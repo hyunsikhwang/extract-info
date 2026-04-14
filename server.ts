@@ -62,7 +62,7 @@ async function startServer() {
 
       const response = await axios.get(pdfUrl, {
         responseType: 'stream',
-        timeout: 120000, // Increased to 120s
+        timeout: 180000, // Increased to 180s
         httpsAgent: httpsAgent,
         httpAgent: httpAgent,
         cancelToken: source.token,

@@ -203,7 +203,7 @@ export default function App() {
   };
 
   const runGeminiExtraction = async (result: ExtractedData) => {
-    const maxRetries = 3;
+    const maxRetries = 5;
     let retryCount = 0;
 
     const attemptExtraction = async (): Promise<void> => {
@@ -224,7 +224,12 @@ export default function App() {
           const rangePdf = await slicePdfPage(result.originalBuffer, 1, Math.min(maxPage, result.numPages));
           pdfBase64 = await arrayBufferToBase64(rangePdf.buffer);
         } else {
-          pdfBase64 = await arrayBufferToBase64(result.originalBuffer);
+          // Optimization: Even if not "fast", most disclosure tables are in the first 60 pages.
+          // Sending 100+ pages often causes timeouts or high demand errors.
+          const limitPage = Math.min(60, result.numPages);
+          console.log(`[NORMAL] Slicing PDF to first ${limitPage} pages for ${result.companyName || result.fileName}...`);
+          const rangePdf = await slicePdfPage(result.originalBuffer, 1, limitPage);
+          pdfBase64 = await arrayBufferToBase64(rangePdf.buffer);
         }
 
         const geminiResult = await extractTablesWithGemini(pdfBase64);
@@ -255,12 +260,18 @@ export default function App() {
           errorMessage.includes('xhr error') || 
           errorMessage.includes('aborted') || 
           errorMessage.includes('fetch failed') ||
-          errorMessage.includes('NetworkError');
+          errorMessage.includes('NetworkError') ||
+          errorMessage.includes('503') ||
+          errorMessage.includes('504') ||
+          errorMessage.includes('timeout') ||
+          errorMessage.includes('high demand') ||
+          errorMessage.includes('UNAVAILABLE');
 
         if (isRetryableError && retryCount < maxRetries) {
           retryCount++;
-          const delay = Math.pow(2, retryCount) * 1000;
-          console.warn(`[Gemini] Retryable error detected (${errorMessage}). Retrying in ${delay}ms... (Attempt ${retryCount}/${maxRetries})`);
+          // Exponential backoff with jitter
+          const delay = Math.pow(2, retryCount) * 1000 + Math.random() * 1000;
+          console.warn(`[Gemini] Retryable error detected (${errorMessage}). Retrying in ${Math.round(delay)}ms... (Attempt ${retryCount}/${maxRetries})`);
           await new Promise(resolve => setTimeout(resolve, delay));
           return attemptExtraction();
         }
