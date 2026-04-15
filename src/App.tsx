@@ -46,6 +46,21 @@ export default function App() {
   const [tokenUsage, setTokenUsage] = useState({ prompt: 0, candidates: 0 });
   const isStoppingRef = React.useRef(false);
 
+  const resetAll = () => {
+    if (window.confirm('모든 데이터와 설정을 초기화하시겠습니까?')) {
+      setUrlInput('');
+      setResults([]);
+      setError(null);
+      setElapsedTime(0);
+      setFinalTime(null);
+      setIsLoading(false);
+      setIsStopping(false);
+      setTokenUsage({ prompt: 0, candidates: 0 });
+      setShowFullText({});
+      isStoppingRef.current = false;
+    }
+  };
+
   // Timer effect
   React.useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -469,12 +484,14 @@ export default function App() {
               <span className="text-gray-400">NORMAL:</span>
               <span className="text-gray-600">{normalCount}</span>
             </div>
-            {(isLoading || finalTime !== null) && (
+            {(isLoading || finalTime !== null || results.length > 0) && (
               <div className="flex items-center gap-4 border-l pl-4">
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-400">RUNTIME:</span>
-                  <span className="text-blue-600">{isLoading ? elapsedTime : finalTime}s</span>
-                </div>
+                {(isLoading || finalTime !== null) && (
+                  <div className="flex items-center gap-1">
+                    <span className="text-gray-400">RUNTIME:</span>
+                    <span className="text-blue-600">{isLoading ? elapsedTime : finalTime}s</span>
+                  </div>
+                )}
                 {processingMode === 'full' && (tokenUsage.prompt > 0 || tokenUsage.candidates > 0) && (
                   <div className="flex items-center gap-3 border-l pl-4">
                     <div className="flex items-center gap-1">
@@ -491,6 +508,14 @@ export default function App() {
                     </div>
                   </div>
                 )}
+                <button
+                  onClick={resetAll}
+                  className="flex items-center gap-1 px-2 py-1 bg-gray-100 hover:bg-red-50 text-gray-500 hover:text-red-600 rounded transition-colors border border-gray-200 hover:border-red-200"
+                  title="모든 데이터 초기화"
+                >
+                  <X size={12} />
+                  <span>초기화</span>
+                </button>
               </div>
             )}
           </div>

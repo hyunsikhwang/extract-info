@@ -12,26 +12,62 @@ const __dirname = path.dirname(__filename);
 
 const httpsAgent = new https.Agent({
   rejectUnauthorized: false,
-  keepAlive: true,
+  keepAlive: false, // Disable keepAlive to prevent socket reuse issues with some servers
 });
 
 const httpAgent = new http.Agent({
-  keepAlive: true,
+  keepAlive: false,
 });
 
 // Robust decoding for Korean filenames
 function decodeKorean(str: string): string {
   if (!str) return str;
+  
+  // 0. Handle RFC 2047 (e.g., =?UTF-8?B?...?= or =?EUC-KR?B?...?=)
+  if (str.startsWith('=?') && str.endsWith('?=') && str.includes('?')) {
+    try {
+      const parts = str.split('?');
+      if (parts.length >= 4) {
+        const encoding = parts[1].toUpperCase();
+        const type = parts[2].toUpperCase();
+        const data = parts[3];
+        
+        let binary: Buffer;
+        if (type === 'B') {
+          binary = Buffer.from(data, 'base64');
+        } else if (type === 'Q') {
+          // Simple Quoted-Printable decoding
+          const qp = data.replace(/_/g, ' ').replace(/=([0-9A-F]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+          binary = Buffer.from(qp, 'binary');
+        } else {
+          binary = Buffer.from(data);
+        }
+        
+        const decoded = iconv.decode(binary, encoding === 'EUC-KR' ? 'cp949' : encoding);
+        if (/[가-힣]/.test(decoded)) return decoded;
+      }
+    } catch (e) {}
+  }
+
+  // 1. If it contains % (URL encoded), try to decode it first
+  if (str.includes('%')) {
+    try {
+      const uriDecoded = decodeURIComponent(str);
+      if (/[가-힣]/.test(uriDecoded)) return uriDecoded;
+    } catch (e) {}
+  }
+
   try {
-    // 1. Try to treat as binary and decode as CP949
+    // 2. Try to treat as binary and decode as CP949
     const binary = Buffer.from(str, 'binary');
     const decoded = iconv.decode(binary, 'cp949');
     if (/[가-힣]/.test(decoded)) return decoded;
     
-    // 2. Try to treat as UTF-8 but misinterpreted as Latin1
+    // 3. Try to treat as UTF-8 but misinterpreted as Latin1
     const utf8 = iconv.decode(binary, 'utf-8');
     if (/[가-힣]/.test(utf8)) return utf8;
   } catch (e) {}
+  
   return str;
 }
 
@@ -55,22 +91,28 @@ async function startServer() {
 
     try {
       let origin = "";
+      let host = "";
       try {
         const urlObj = new URL(pdfUrl);
         origin = urlObj.origin;
+        host = urlObj.host;
       } catch (e) {}
 
       const response = await axios.get(pdfUrl, {
         responseType: 'stream',
-        timeout: 180000, // Increased to 180s
+        timeout: 300000, // Increased to 300s (5 mins)
         httpsAgent: httpsAgent,
         httpAgent: httpAgent,
         cancelToken: source.token,
         headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-          "Accept": "application/pdf,application/zip,application/octet-stream,*/*",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
           "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-          "Connection": "keep-alive",
+          "Cache-Control": "no-cache",
+          "Pragma": "no-cache",
+          "Connection": "close",
+          "Upgrade-Insecure-Requests": "1",
+          ...(host ? { "Host": host } : {}),
           ...(origin ? { "Referer": origin } : {})
         },
         validateStatus: () => true
@@ -93,19 +135,29 @@ async function startServer() {
       const contentDisposition = response.headers["content-disposition"];
       if (contentDisposition) {
         try {
-          const filenameMatch = contentDisposition.match(/filename\*?=['"]?(?:UTF-8'')?([^;'"\n]*)['"]?/i);
-          if (filenameMatch && filenameMatch[1]) {
-            const rawFilename = filenameMatch[1];
+          let rawFilename = "";
+          
+          // Try filename* (RFC 6266)
+          const starMatch = contentDisposition.match(/filename\*=['"]?(?:UTF-8|EUC-KR)''([^;'"\n]*)['"]?/i);
+          if (starMatch && starMatch[1]) {
+            rawFilename = starMatch[1];
+          } else {
+            // Try regular filename
+            const regMatch = contentDisposition.match(/filename=['"]?([^;'"\n]*)['"]?/i);
+            if (regMatch && regMatch[1]) {
+              rawFilename = regMatch[1];
+            }
+          }
+
+          if (rawFilename) {
             let decoded = decodeKorean(rawFilename);
-            try {
-              const uriDecoded = decodeURIComponent(decoded);
-              if (/[가-힣]/.test(uriDecoded)) decoded = uriDecoded;
-            } catch (e) {}
             if (/[가-힣]/.test(decoded)) {
               res.setHeader("X-Filename-Decoded", encodeURIComponent(decoded));
             }
           }
-        } catch (e) {}
+        } catch (e) {
+          console.error("Error decoding filename in proxy:", e);
+        }
       }
 
       // Use pipeline for robust streaming

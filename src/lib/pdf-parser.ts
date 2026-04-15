@@ -2,6 +2,8 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { PDFDocument } from 'pdf-lib';
 import JSZip from 'jszip';
+import iconv from 'iconv-lite';
+import { Buffer } from 'buffer';
 
 // Set worker source for pdfjs-dist
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -13,7 +15,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 function tryDecode(input: string | Uint8Array | any): string {
   if (!input) return "";
   
-  let bytes: Uint8Array;
+  let bytes: Buffer;
   let originalStr = "";
 
   if (typeof input === 'string') {
@@ -21,54 +23,97 @@ function tryDecode(input: string | Uint8Array | any): string {
     // If it's already clean ASCII, return as is
     if (!/[^\x00-\x7F]/.test(input)) return input;
     // Most Mojibake occurs when bytes are read as Latin1
-    bytes = new Uint8Array(input.split('').map(c => c.charCodeAt(0) & 0xFF));
+    bytes = Buffer.from(input, 'binary');
   } else if (input instanceof Uint8Array) {
-    bytes = input;
+    bytes = Buffer.from(input);
   } else if (Array.isArray(input)) {
-    // Handle string[] or byte array if necessary
-    bytes = new Uint8Array(input.map(x => typeof x === 'string' ? x.charCodeAt(0) : x));
+    bytes = Buffer.from(input);
   } else {
-    // Fallback for other types (like Buffer)
     try {
-      bytes = new Uint8Array(input);
+      bytes = Buffer.from(input);
     } catch (e) {
       return String(input);
     }
   }
 
-  const encodings = ['cp949', 'euc-kr', 'utf-8', 'utf-16le', 'utf-16be'];
-  const keywords = ['경영공시', '정기공시', '공시', '결산', '사업보고서', '보험', 'disclosure'];
+  const encodings = ['cp949', 'euc-kr', 'utf-8', 'utf-16le', 'utf-16be', 'iso-8859-1'];
+  const keywords = ['경영공시', '정기공시', '공시', '결산', '사업보고서', '보험', 'disclosure', '현황', '삼성화재', '현대해상', 'DB손해보험', 'KB손해보험', '메리츠화재'];
   
   let bestText = originalStr || "";
   let bestScore = -1;
 
   const scoreText = (text: string) => {
+    if (!text) return -1;
     let score = 0;
     // Count Korean characters
     const koreanMatch = text.match(/[가-힣]/g);
-    score += (koreanMatch ? koreanMatch.length : 0) * 10;
+    score += (koreanMatch ? koreanMatch.length : 0) * 20; // Increased weight
     
     // Huge bonus for keywords
     for (const kw of keywords) {
       if (text.toLowerCase().includes(kw.toLowerCase())) {
-        score += 1000;
+        score += 2000; // Increased weight
       }
     }
     
     // Penalty for too many control characters or replacement characters
     const badChars = text.match(/[\u0000-\u001F\u007F-\u009F\uFFFD]/g);
-    score -= (badChars ? badChars.length : 0) * 10;
+    score -= (badChars ? badChars.length : 0) * 50;
     
     // Penalty for very short strings if they have bad chars
-    if (text.length < 3 && badChars) score -= 50;
+    if (text.length < 3 && badChars) score -= 200;
+
+    // Bonus for common Korean sentence structures or markers
+    if (text.includes('의 현황') || text.includes('관련 현황') || text.includes('보고서')) score += 500;
 
     return score;
   };
 
-  // Strategy 1: Decode from bytes
+  // Strategy -1: RFC 2047 (B/Q encoding)
+  if (typeof input === 'string' && input.startsWith('=?') && input.endsWith('?=') && input.includes('?')) {
+    try {
+      const parts = input.split('?');
+      if (parts.length >= 4) {
+        const encoding = parts[1].toUpperCase();
+        const type = parts[2].toUpperCase();
+        const data = parts[3];
+        
+        let binary: Buffer;
+        if (type === 'B') {
+          binary = Buffer.from(data, 'base64');
+        } else if (type === 'Q') {
+          const qp = data.replace(/_/g, ' ').replace(/=([0-9A-F]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+          binary = Buffer.from(qp, 'binary');
+        } else {
+          binary = Buffer.from(data);
+        }
+        
+        const decoded = iconv.decode(binary, encoding === 'EUC-KR' ? 'cp949' : encoding);
+        const score = scoreText(decoded);
+        if (score > bestScore) {
+          bestText = decoded;
+          bestScore = score;
+        }
+      }
+    } catch (e) {}
+  }
+
+  // Strategy 0: URL Decoding (if string)
+  if (typeof input === 'string' && input.includes('%')) {
+    try {
+      const uriDecoded = decodeURIComponent(input);
+      const score = scoreText(uriDecoded);
+      if (score > bestScore) {
+        bestText = uriDecoded;
+        bestScore = score;
+      }
+    } catch (e) {}
+  }
+
+  // Strategy 1: Decode from bytes using iconv-lite
   for (const encoding of encodings) {
     try {
-      const decoded = new TextDecoder(encoding, { fatal: false }).decode(bytes);
+      const decoded = iconv.decode(bytes, encoding);
       const score = scoreText(decoded);
       if (score > bestScore) {
         bestText = decoded;
@@ -80,11 +125,11 @@ function tryDecode(input: string | Uint8Array | any): string {
   // Strategy 2: If input was string, try UTF-8 Mojibake Recovery
   if (typeof input === 'string') {
     try {
-      const utf8Bytes = new TextEncoder().encode(input);
+      const utf8Bytes = Buffer.from(input, 'utf8');
       for (const encoding of encodings) {
         if (encoding === 'utf-8') continue;
         try {
-          const decoded = new TextDecoder(encoding, { fatal: false }).decode(utf8Bytes);
+          const decoded = iconv.decode(utf8Bytes, encoding);
           const score = scoreText(decoded);
           if (score > bestScore) {
             bestText = decoded;
@@ -95,23 +140,25 @@ function tryDecode(input: string | Uint8Array | any): string {
     } catch (e) {}
   }
 
-  // Strategy 3: Specific Mojibake Mappings
-  if (bestScore < 100) {
-    try {
-      const manualMap: Record<number, number> = {
-        0x11A: 0xC1, // Ě -> 제 (1st byte)
-        0x238: 0xA6, // ȸ -> 제 (2nd byte)
-      };
-      
-      const customBytes = new Uint8Array(Array.from(bytes).map(b => manualMap[b] || b));
-      const decoded = new TextDecoder('cp949', { fatal: false }).decode(customBytes);
-      const score = scoreText(decoded);
-      if (score > bestScore) {
-        bestText = decoded;
-        bestScore = score;
-      }
-    } catch (e) {}
-  }
+  // Strategy 3: Specific Mojibake Mappings (Extended)
+  try {
+    const manualMap: Record<number, number> = {
+      0x11A: 0xC1, // Ě -> 제 (1st byte)
+      0x238: 0xA6, // ȸ -> 제 (2nd byte)
+      0x00C0: 0xB0, // À -> 경 (1st byte)
+      0x00E6: 0xE5, // æ -> 경 (2nd byte)
+      0x00C1: 0xB0, // Á -> 경 (alternative)
+      0x00D1: 0xB0, // Ñ -> 경 (alternative)
+    };
+    
+    const customBytes = Buffer.from(Array.from(bytes).map(b => manualMap[b] || b));
+    const decoded = iconv.decode(customBytes, 'cp949');
+    const score = scoreText(decoded);
+    if (score > bestScore) {
+      bestText = decoded;
+      bestScore = score;
+    }
+  } catch (e) {}
   
   if (bestScore >= 0) {
     return bestText.trim();
@@ -187,14 +234,20 @@ export async function extractTextFromUrl(url: string): Promise<ExtractedData> {
   } else {
     const contentDisposition = response.headers.get('content-disposition');
     if (contentDisposition) {
+      let rawFilename = "";
       // Support both filename and filename* (RFC 5987)
-      const filenameMatch = contentDisposition.match(/filename\*?=['"]?(?:UTF-8'')?([^;'"\n]*)['"]?/i);
-      if (filenameMatch && filenameMatch[1]) {
-        try {
-          fileName = tryDecode(decodeURIComponent(filenameMatch[1]));
-        } catch (e) {
-          fileName = tryDecode(filenameMatch[1]);
+      const starMatch = contentDisposition.match(/filename\*=['"]?(?:UTF-8|EUC-KR)''([^;'"\n]*)['"]?/i);
+      if (starMatch && starMatch[1]) {
+        rawFilename = starMatch[1];
+      } else {
+        const regMatch = contentDisposition.match(/filename=['"]?([^;'"\n]*)['"]?/i);
+        if (regMatch && regMatch[1]) {
+          rawFilename = regMatch[1];
         }
+      }
+      
+      if (rawFilename) {
+        fileName = tryDecode(rawFilename);
       }
     } else {
       // Fallback to URL basename
@@ -203,7 +256,7 @@ export async function extractTextFromUrl(url: string): Promise<ExtractedData> {
         const pathname = urlObj.pathname;
         const base = pathname.substring(pathname.lastIndexOf('/') + 1);
         if (base && base.toLowerCase().endsWith('.pdf')) {
-          fileName = tryDecode(decodeURIComponent(base));
+          fileName = tryDecode(base);
         }
       } catch (e) {}
     }
@@ -259,29 +312,69 @@ export async function extractTextFromUrl(url: string): Promise<ExtractedData> {
         size: `${(p.size / 1024).toFixed(2)} KB` 
       })));
 
-      // 2. Selection Logic: Strict but Flexible "Disclosure" Check
-      let targetPdf = null;
+      // 2. Selection Logic: Strict "경영공시" Filename Priority
+      console.log("[ZIP] Searching for disclosure PDF. Priority: Filename containing '경영공시'");
+
+      // First Priority: Any file with "경영공시" in the name
+      const disclosureNamedFiles = pdfCandidates.filter(p => p.name.toLowerCase().includes('경영공시'));
       
-      console.log("[ZIP] Searching for disclosure PDF (경영공시, 공시, 정기공시)...");
+      let targetPdf = null;
 
-      // Stage A: Check filenames
-      targetPdf = pdfCandidates.find(p => {
-        const lowerName = p.name.toLowerCase();
-        return lowerName.includes('경영공시') || 
-               lowerName.includes('정기공시') || 
-               lowerName.includes('공시') ||
-               lowerName.includes('결산') ||
-               lowerName.includes('사업보고서') ||
-               lowerName.includes('분기보고서') ||
-               lowerName.includes('반기보고서') ||
-               lowerName.includes('disclosure');
-      });
-
-      if (targetPdf) {
-        console.log(`[ZIP] Found disclosure keyword in filename: ${targetPdf.name}`);
+      if (disclosureNamedFiles.length > 0) {
+        // If multiple files have "경영공시", pick the largest one (usually the main report)
+        disclosureNamedFiles.sort((a, b) => b.size - a.size);
+        targetPdf = disclosureNamedFiles[0];
+        console.log(`[ZIP] Found '경영공시' in filename. Selecting largest: ${targetPdf.name}`);
       } else {
+        // Second Priority: Scoring system for other keywords
+        console.log("[ZIP] '경영공시' not found in filenames. Using scoring system for other keywords...");
+        
+        const scoreFilename = (name: string) => {
+          const lower = name.toLowerCase();
+          let score = 0;
+
+          // Positive keywords
+          if (lower.includes('정기공시')) score += 900;
+          if (lower.includes('사업보고서')) score += 800;
+          if (lower.includes('분기보고서')) score += 700;
+          if (lower.includes('반기보고서')) score += 700;
+          if (lower.includes('공시')) score += 500;
+          if (lower.includes('결산')) score += 300;
+          if (lower.includes('현황')) score += 200;
+          if (lower.includes('disclosure')) score += 200;
+
+          // Negative keywords
+          if (lower.includes('검토보고서')) score -= 2000;
+          if (lower.includes('감사보고서')) score -= 2000;
+          if (lower.includes('요약')) score -= 500;
+          if (lower.includes('영문')) score -= 800;
+          if (lower.includes('english')) score -= 800;
+          if (lower.includes('별도')) score -= 100;
+
+          return score;
+        };
+
+        const scoredCandidates = pdfCandidates.map(p => ({
+          ...p,
+          filenameScore: scoreFilename(p.name)
+        }));
+
+        scoredCandidates.sort((a, b) => {
+          if (b.filenameScore !== a.filenameScore) {
+            return b.filenameScore - a.filenameScore;
+          }
+          return b.size - a.size;
+        });
+
+        if (scoredCandidates[0]?.filenameScore > 0) {
+          targetPdf = scoredCandidates[0];
+          console.log(`[ZIP] Selected best matching file by score: ${targetPdf.name} (Score: ${targetPdf.filenameScore})`);
+        }
+      }
+
+      if (!targetPdf) {
         // Stage B: Check content of top candidates (up to 15) if filename check failed
-        console.log("[ZIP] Keyword not found in filenames. Checking content of top 15 candidates...");
+        console.log("[ZIP] No suitable filename found. Checking content of top 15 candidates...");
         for (let i = 0; i < Math.min(15, pdfCandidates.length); i++) {
           const candidate = pdfCandidates[i];
           try {
