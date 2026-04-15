@@ -116,6 +116,7 @@ export interface ExtractedData {
   error?: string;
   url?: string;
   geminiData?: any;
+  mergedBuffer?: ArrayBuffer;
   id: string;
 }
 
@@ -419,6 +420,31 @@ export async function slicePdfPage(arrayBuffer: ArrayBuffer, startPage: number, 
   
   if (pagesToCopy.length === 0) {
     throw new Error('Invalid page range');
+  }
+
+  const copiedPages = await newPdf.copyPages(pdfDoc, pagesToCopy);
+  copiedPages.forEach(page => newPdf.addPage(page));
+  
+  return await newPdf.save();
+}
+
+export async function mergePdfPages(arrayBuffer: ArrayBuffer, pageNumbers: number[]): Promise<Uint8Array> {
+  const bufferCopy = arrayBuffer.slice(0);
+  const pdfDoc = await PDFDocument.load(bufferCopy);
+  const newPdf = await PDFDocument.create();
+  
+  const totalPages = pdfDoc.getPageCount();
+  const pagesToCopy: number[] = [];
+  
+  // pageNumbers are 1-indexed
+  for (const pageNum of pageNumbers) {
+    if (pageNum >= 1 && pageNum <= totalPages) {
+      pagesToCopy.push(pageNum - 1);
+    }
+  }
+  
+  if (pagesToCopy.length === 0) {
+    throw new Error('No valid pages to merge');
   }
 
   const copiedPages = await newPdf.copyPages(pdfDoc, pagesToCopy);

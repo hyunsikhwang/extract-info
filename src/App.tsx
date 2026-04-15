@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Upload, FileText, Table, Code, ChevronDown, ChevronUp, AlertCircle, CheckCircle2, Copy, Check, Link as LinkIcon, ArrowRight, Loader2, Download, X, Square } from 'lucide-react';
-import { extractTextFromPdf, extractTextFromUrl, ExtractedData, slicePdfPage } from './lib/pdf-parser';
+import { extractTextFromPdf, extractTextFromUrl, ExtractedData, slicePdfPage, mergePdfPages } from './lib/pdf-parser';
 import { extractTablesWithGemini, ComparisonTableResult, SolvencyTableResult } from './services/geminiService';
 
 // Helper to convert ArrayBuffer to base64 efficiently using browser native APIs
@@ -112,6 +112,33 @@ export default function App() {
           // Gemini Extraction (Conditional)
           if (processingMode === 'full' && !result.error) {
             await runGeminiExtraction(result);
+          } else if (processingMode === 'analysis' && !result.error) {
+            // Even in analysis mode, we should generate mergedBuffer if it's FAST
+            const isFast = result.table1.page !== null && result.table3.page !== null;
+            if (isFast) {
+              const pages = new Set<number>();
+              pages.add(1);
+              if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
+              if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
+              if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
+              const sortedPages = Array.from(pages).sort((a, b) => a - b);
+              try {
+                const mergedPdf = await mergePdfPages(result.originalBuffer, sortedPages);
+                setResults(prev => {
+                  const newResults = [...prev];
+                  const targetIndex = newResults.findIndex(r => r.id === result.id);
+                  if (targetIndex !== -1) {
+                    newResults[targetIndex] = {
+                      ...newResults[targetIndex],
+                      mergedBuffer: mergedPdf.buffer
+                    };
+                  }
+                  return newResults;
+                });
+              } catch (e) {
+                console.warn("Failed to create merged PDF in analysis mode", e);
+              }
+            }
           }
         } catch (err) {
           console.error(`Error processing ${url}:`, err);
@@ -180,6 +207,33 @@ export default function App() {
       
       if (processingMode === 'full' && !result.error) {
         await runGeminiExtraction(result);
+      } else if (processingMode === 'analysis' && !result.error) {
+        // Even in analysis mode, generate mergedBuffer for FAST documents
+        const isFast = result.table1.page !== null && result.table3.page !== null;
+        if (isFast) {
+          const pages = new Set<number>();
+          pages.add(1);
+          if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
+          if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
+          if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
+          const sortedPages = Array.from(pages).sort((a, b) => a - b);
+          try {
+            const mergedPdf = await mergePdfPages(result.originalBuffer, sortedPages);
+            setResults(prev => {
+              const newResults = [...prev];
+              const targetIndex = newResults.findIndex(r => r.id === result.id);
+              if (targetIndex !== -1) {
+                newResults[targetIndex] = {
+                  ...newResults[targetIndex],
+                  mergedBuffer: mergedPdf.buffer
+                };
+              }
+              return newResults;
+            });
+          } catch (e) {
+            console.warn("Failed to create merged PDF in analysis mode", e);
+          }
+        }
       }
     } catch (err) {
       console.error(err);
@@ -207,12 +261,13 @@ export default function App() {
     let retryCount = 0;
 
     const attemptExtraction = async (): Promise<void> => {
+      let mergedBuffer: ArrayBuffer | undefined = undefined;
       try {
         const isFast = result.table1.page !== null && result.table3.page !== null;
         let pdfBase64 = '';
 
         if (isFast) {
-          console.log(`[FAST] Slicing PDF for ${result.companyName}...`);
+          console.log(`[FAST] Merging relevant pages for ${result.companyName}...`);
           const pages = new Set<number>();
           pages.add(1);
           if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
@@ -220,16 +275,13 @@ export default function App() {
           if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
 
           const sortedPages = Array.from(pages).sort((a, b) => a - b);
-          const maxPage = Math.max(...sortedPages);
-          const rangePdf = await slicePdfPage(result.originalBuffer, 1, Math.min(maxPage, result.numPages));
-          pdfBase64 = await arrayBufferToBase64(rangePdf.buffer);
+          const mergedPdf = await mergePdfPages(result.originalBuffer, sortedPages);
+          mergedBuffer = mergedPdf.buffer;
+          pdfBase64 = await arrayBufferToBase64(mergedBuffer);
         } else {
-          // Optimization: Even if not "fast", most disclosure tables are in the first 60 pages.
-          // Sending 100+ pages often causes timeouts or high demand errors.
-          const limitPage = Math.min(60, result.numPages);
-          console.log(`[NORMAL] Slicing PDF to first ${limitPage} pages for ${result.companyName || result.fileName}...`);
-          const rangePdf = await slicePdfPage(result.originalBuffer, 1, limitPage);
-          pdfBase64 = await arrayBufferToBase64(rangePdf.buffer);
+          // NORMAL mode: Send original PDF as is
+          console.log(`[NORMAL] Sending original PDF for ${result.companyName || result.fileName}...`);
+          pdfBase64 = await arrayBufferToBase64(result.originalBuffer);
         }
 
         const geminiResult = await extractTablesWithGemini(pdfBase64);
@@ -241,7 +293,8 @@ export default function App() {
           if (targetIndex !== -1) {
             newResults[targetIndex] = {
               ...newResults[targetIndex],
-              geminiData: geminiResult
+              geminiData: geminiResult,
+              mergedBuffer: mergedBuffer // This ensures the buffer is saved to the state
             };
           }
           return newResults;
@@ -285,7 +338,8 @@ export default function App() {
           if (targetIndex !== -1) {
             newResults[targetIndex] = {
               ...newResults[targetIndex],
-              error: `AI 추출 실패: ${errorMessage}`
+              error: `AI 추출 실패: ${errorMessage}`,
+              mergedBuffer: mergedBuffer // Preserve mergedBuffer even on failure
             };
           }
           return newResults;
@@ -380,10 +434,12 @@ export default function App() {
   const fastCount = results.filter(r => r.table1.page !== null && r.table3.page !== null).length;
   const normalCount = results.length - fastCount;
 
-  // Gemini 1.5 Flash Pricing (approximate)
-  // Input: $0.075 / 1M tokens (< 128k context)
-  // Output: $0.30 / 1M tokens (< 128k context)
-  const estimatedCost = (tokenUsage.prompt * 0.000000075) + (tokenUsage.candidates * 0.0000003);
+  // Gemini 1.5 Flash Pricing (Actual as of April 2024)
+  // Input: $0.075 / 1M tokens (< 128k context) -> $0.000000075 per token
+  // Output: $0.30 / 1M tokens (< 128k context) -> $0.0000003 per token
+  // Exchange Rate: 1 USD = 1,400 KRW (Approximate)
+  const estimatedCostUSD = (tokenUsage.prompt * 0.000000075) + (tokenUsage.candidates * 0.0000003);
+  const estimatedCostKRW = estimatedCostUSD * 1400;
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans p-4 md:p-8">
@@ -422,7 +478,9 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-1">
                       <span className="text-gray-400">COST:</span>
-                      <span className="text-green-600 font-bold">${estimatedCost.toFixed(5)}</span>
+                      <span className="text-green-600 font-bold">
+                        ${estimatedCostUSD.toFixed(5)} (약 {Math.round(estimatedCostKRW).toLocaleString()}원)
+                      </span>
                     </div>
                   </div>
                 )}
@@ -745,28 +803,51 @@ export default function App() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {data.error && (
-                    <button
+                  <button
+                    onClick={() => {
+                      if (data.originalBuffer.byteLength > 0) {
+                        const blob = new Blob([data.originalBuffer], { type: 'application/pdf' });
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = data.fileName;
+                        link.click();
+                        URL.revokeObjectURL(url);
+                      } else if (data.url) {
+                        const proxyUrl = `/api/proxy-pdf?url=${encodeURIComponent(data.url)}`;
+                        window.open(proxyUrl, '_blank');
+                      }
+                    }}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all border ${
+                      data.error 
+                        ? 'bg-red-100 hover:bg-red-200 text-red-700 border-red-200' 
+                        : 'bg-gray-100 hover:bg-gray-200 text-gray-700 border-gray-200'
+                    }`}
+                  >
+                    <Download size={14} />
+                    원본 PDF
+                  </button>
+
+                  {data.mergedBuffer && (
+                    <button 
                       onClick={() => {
-                        if (data.originalBuffer.byteLength > 0) {
-                          const blob = new Blob([data.originalBuffer], { type: 'application/pdf' });
+                        if (data.mergedBuffer && data.mergedBuffer.byteLength > 0) {
+                          const blob = new Blob([data.mergedBuffer], { type: 'application/pdf' });
                           const url = URL.createObjectURL(blob);
                           const link = document.createElement('a');
                           link.href = url;
-                          link.download = data.fileName;
+                          link.download = `merged_${data.fileName}`;
                           link.click();
                           URL.revokeObjectURL(url);
-                        } else if (data.url) {
-                          const proxyUrl = `/api/proxy-pdf?url=${encodeURIComponent(data.url)}`;
-                          window.open(proxyUrl, '_blank');
                         }
                       }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg text-[10px] font-bold transition-all border border-red-200"
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-[10px] font-bold transition-all border border-blue-200"
                     >
                       <Download size={14} />
-                      원본 PDF 다운로드
+                      병합 PDF (AI용)
                     </button>
                   )}
+
                   <button 
                     onClick={() => setResults(prev => prev.filter((_, i) => i !== resultIndex))}
                     className="px-3 py-1 text-[10px] font-medium text-red-500 hover:bg-red-50 rounded-md transition-colors"
