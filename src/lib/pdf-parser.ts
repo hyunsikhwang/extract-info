@@ -7,83 +7,117 @@ import JSZip from 'jszip';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 /**
- * Robustly decodes strings that might be incorrectly encoded.
+ * Robustly decodes strings or bytes that might be incorrectly encoded.
  * Tries multiple common Korean encodings and selects the one that produces the most Korean characters.
  */
-function tryDecode(str: string): string {
-  if (!str) return str;
+function tryDecode(input: string | Uint8Array | any): string {
+  if (!input) return "";
   
-  // If it's already clean ASCII, return as is
-  if (!/[^\x00-\x7F]/.test(str)) return str;
+  let bytes: Uint8Array;
+  let originalStr = "";
 
-  // Pattern from hyunsikhwang/Context-Snip:
-  // Most Mojibake in Korean occurs when CP949 bytes are read as Latin1 (ISO-8859-1)
-  // or when they are incorrectly converted to UTF-8.
-  
-  const encodings = ['cp949', 'euc-kr', 'utf-8'];
-  const candidates: { text: string; score: number } = { text: str, score: 0 };
-
-  // Strategy 1: Raw Byte Recovery (Latin1 to CP949)
-  try {
-    const bytes = new Uint8Array(str.split('').map(c => c.charCodeAt(0) & 0xFF));
-    for (const encoding of encodings) {
-      const decoded = new TextDecoder(encoding, { fatal: false }).decode(bytes);
-      const koreanMatch = decoded.match(/[가-힣]/g);
-      const score = koreanMatch ? koreanMatch.length : 0;
-      if (score > candidates.score) {
-        candidates.text = decoded;
-        candidates.score = score;
-      }
-    }
-  } catch (e) {}
-
-  // Strategy 2: UTF-8 Mojibake Recovery
-  // If the string was already "converted" to UTF-8 incorrectly, we need to re-encode it
-  try {
-    const utf8Bytes = new TextEncoder().encode(str);
-    // Sometimes the "broken" string is actually a sequence of bytes that form a valid CP949 string
-    // but were read as UTF-8. We try to decode the UTF-8 bytes as CP949.
-    for (const encoding of encodings) {
-      if (encoding === 'utf-8') continue;
-      const decoded = new TextDecoder(encoding, { fatal: false }).decode(utf8Bytes);
-      const koreanMatch = decoded.match(/[가-힣]/g);
-      const score = koreanMatch ? koreanMatch.length : 0;
-      if (score > candidates.score) {
-        candidates.text = decoded;
-        candidates.score = score;
-      }
-    }
-  } catch (e) {}
-
-  // Strategy 3: Double-byte character recovery (Specific to [Ěȸ] case)
-  // [Ěȸ] -> [제회]
-  // Ě (0x11A) and ȸ (0x238) are not simple 0-255 bytes.
-  // This suggests a more complex misinterpretation.
-  if (candidates.score === 0) {
+  if (typeof input === 'string') {
+    originalStr = input;
+    // If it's already clean ASCII, return as is
+    if (!/[^\x00-\x7F]/.test(input)) return input;
+    // Most Mojibake occurs when bytes are read as Latin1
+    bytes = new Uint8Array(input.split('').map(c => c.charCodeAt(0) & 0xFF));
+  } else if (input instanceof Uint8Array) {
+    bytes = input;
+  } else if (Array.isArray(input)) {
+    // Handle string[] or byte array if necessary
+    bytes = new Uint8Array(input.map(x => typeof x === 'string' ? x.charCodeAt(0) : x));
+  } else {
+    // Fallback for other types (like Buffer)
     try {
-      // Try to see if we can map these specific characters back to their CP949 bytes
-      // This is a heuristic for the specific Mojibake reported by the user
+      bytes = new Uint8Array(input);
+    } catch (e) {
+      return String(input);
+    }
+  }
+
+  const encodings = ['cp949', 'euc-kr', 'utf-8', 'utf-16le', 'utf-16be'];
+  const keywords = ['경영공시', '정기공시', '공시', '결산', '사업보고서', '보험', 'disclosure'];
+  
+  let bestText = originalStr || "";
+  let bestScore = -1;
+
+  const scoreText = (text: string) => {
+    let score = 0;
+    // Count Korean characters
+    const koreanMatch = text.match(/[가-힣]/g);
+    score += (koreanMatch ? koreanMatch.length : 0) * 10;
+    
+    // Huge bonus for keywords
+    for (const kw of keywords) {
+      if (text.toLowerCase().includes(kw.toLowerCase())) {
+        score += 1000;
+      }
+    }
+    
+    // Penalty for too many control characters or replacement characters
+    const badChars = text.match(/[\u0000-\u001F\u007F-\u009F\uFFFD]/g);
+    score -= (badChars ? badChars.length : 0) * 10;
+    
+    // Penalty for very short strings if they have bad chars
+    if (text.length < 3 && badChars) score -= 50;
+
+    return score;
+  };
+
+  // Strategy 1: Decode from bytes
+  for (const encoding of encodings) {
+    try {
+      const decoded = new TextDecoder(encoding, { fatal: false }).decode(bytes);
+      const score = scoreText(decoded);
+      if (score > bestScore) {
+        bestText = decoded;
+        bestScore = score;
+      }
+    } catch (e) {}
+  }
+
+  // Strategy 2: If input was string, try UTF-8 Mojibake Recovery
+  if (typeof input === 'string') {
+    try {
+      const utf8Bytes = new TextEncoder().encode(input);
+      for (const encoding of encodings) {
+        if (encoding === 'utf-8') continue;
+        try {
+          const decoded = new TextDecoder(encoding, { fatal: false }).decode(utf8Bytes);
+          const score = scoreText(decoded);
+          if (score > bestScore) {
+            bestText = decoded;
+            bestScore = score;
+          }
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  // Strategy 3: Specific Mojibake Mappings
+  if (bestScore < 100) {
+    try {
       const manualMap: Record<number, number> = {
         0x11A: 0xC1, // Ě -> 제 (1st byte)
         0x238: 0xA6, // ȸ -> 제 (2nd byte)
-        // Add more common mappings if needed
       };
       
-      const customBytes = new Uint8Array(str.split('').map(c => {
-        const code = c.charCodeAt(0);
-        return manualMap[code] || (code & 0xFF);
-      }));
-      
+      const customBytes = new Uint8Array(Array.from(bytes).map(b => manualMap[b] || b));
       const decoded = new TextDecoder('cp949', { fatal: false }).decode(customBytes);
-      if (/[가-힣]/.test(decoded)) return decoded.trim();
+      const score = scoreText(decoded);
+      if (score > bestScore) {
+        bestText = decoded;
+        bestScore = score;
+      }
     } catch (e) {}
   }
   
-  if (candidates.score > 0) {
-    return candidates.text.trim();
+  if (bestScore >= 0) {
+    return bestText.trim();
   }
 
-  return str.replace(/[\u0000-\u001F\u007F-\u009F]/g, "").trim();
+  return (typeof input === 'string' ? input : "").replace(/[\u0000-\u001F\u007F-\u009F]/g, "").trim();
 }
 
 export interface TableRow {
@@ -190,7 +224,9 @@ export async function extractTextFromUrl(url: string): Promise<ExtractedData> {
     
     if (signature === "PK") {
       const zip = new JSZip();
-      const zipContent = await zip.loadAsync(arrayBuffer);
+      const zipContent = await zip.loadAsync(arrayBuffer, {
+        decodeFileName: (bytes) => tryDecode(bytes)
+      });
       
       const allFiles = Object.keys(zipContent.files);
       console.log("[ZIP] Files found in archive:", allFiles);
@@ -202,9 +238,9 @@ export async function extractTextFromUrl(url: string): Promise<ExtractedData> {
           .map(async name => {
             const fileData = zipContent.files[name];
             const content = await fileData.async('arraybuffer');
-            const decodedName = tryDecode(name);
+            // Filename is already decoded by JSZip using our tryDecode logic
             return { 
-              name: decodedName, 
+              name, 
               size: content.byteLength,
               content
             };
@@ -229,20 +265,24 @@ export async function extractTextFromUrl(url: string): Promise<ExtractedData> {
       console.log("[ZIP] Searching for disclosure PDF (경영공시, 공시, 정기공시)...");
 
       // Stage A: Check filenames
-      targetPdf = pdfCandidates.find(p => 
-        p.name.includes('경영공시') || 
-        p.name.includes('정기공시') || 
-        p.name.includes('공시') ||
-        p.name.includes('결산') ||
-        p.name.includes('사업보고서')
-      );
+      targetPdf = pdfCandidates.find(p => {
+        const lowerName = p.name.toLowerCase();
+        return lowerName.includes('경영공시') || 
+               lowerName.includes('정기공시') || 
+               lowerName.includes('공시') ||
+               lowerName.includes('결산') ||
+               lowerName.includes('사업보고서') ||
+               lowerName.includes('분기보고서') ||
+               lowerName.includes('반기보고서') ||
+               lowerName.includes('disclosure');
+      });
 
       if (targetPdf) {
         console.log(`[ZIP] Found disclosure keyword in filename: ${targetPdf.name}`);
       } else {
-        // Stage B: Check content of top candidates (up to 10) if filename check failed
-        console.log("[ZIP] Keyword not found in filenames. Checking content of top 10 candidates...");
-        for (let i = 0; i < Math.min(10, pdfCandidates.length); i++) {
+        // Stage B: Check content of top candidates (up to 15) if filename check failed
+        console.log("[ZIP] Keyword not found in filenames. Checking content of top 15 candidates...");
+        for (let i = 0; i < Math.min(15, pdfCandidates.length); i++) {
           const candidate = pdfCandidates[i];
           try {
             const loadingTask = pdfjsLib.getDocument({ data: candidate.content.slice(0) });
@@ -252,7 +292,13 @@ export async function extractTextFromUrl(url: string): Promise<ExtractedData> {
             const pageText = textContent.items.map((item: any) => item.str).join('');
             
             // Check for keywords in the actual content (first page)
-            if (pageText.includes('경영공시') || pageText.includes('공시') || pageText.includes('보험회사') || pageText.includes('결산')) {
+            const lowerPageText = pageText.toLowerCase();
+            if (lowerPageText.includes('경영공시') || 
+                lowerPageText.includes('정기공시') || 
+                lowerPageText.includes('공시') || 
+                lowerPageText.includes('보험회사') || 
+                lowerPageText.includes('결산') ||
+                lowerPageText.includes('사업보고서')) {
               console.log(`[ZIP] Found disclosure keyword in content of candidate #${i+1}: ${candidate.name}.`);
               targetPdf = candidate;
               break;

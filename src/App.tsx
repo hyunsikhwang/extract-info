@@ -458,7 +458,7 @@ export default function App() {
             className="text-2xl font-bold tracking-tight mb-2"
             id="app-title"
           >
-            PDF Multi-Document Extractor
+            경영공시 정보추출
           </motion.h1>
           <div className="flex items-center justify-center gap-4 text-[10px] font-bold">
             <div className="flex items-center gap-1">

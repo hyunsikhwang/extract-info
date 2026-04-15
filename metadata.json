@@ -1,6 +1,6 @@
 {
-  "name": "경영공시 정보 추출",
-  "description": "Extracts specific financial tables from PDF documents and converts them to JSON format without using AI models.",
+  "name": "경영공시 정보추출",
+  "description": "보험사 경영공시 PDF에서 지급여력비율 및 예실차비율 데이터를 AI를 통해 자동으로 추출하고 통합 관리합니다.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }
