@@ -266,7 +266,8 @@ export default function App() {
         const isFast = result.table1.page !== null && result.table3.page !== null;
         let pdfBase64 = '';
 
-        if (isFast) {
+        // If we already failed once and are retrying, or if it's not fast mode, use original
+        if (isFast && retryCount === 0) {
           console.log(`[FAST] Merging relevant pages for ${result.companyName}...`);
           const pages = new Set<number>();
           pages.add(1);
@@ -275,12 +276,17 @@ export default function App() {
           if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
 
           const sortedPages = Array.from(pages).sort((a, b) => a - b);
-          const mergedPdf = await mergePdfPages(result.originalBuffer, sortedPages);
-          mergedBuffer = mergedPdf.buffer;
-          pdfBase64 = await arrayBufferToBase64(mergedBuffer);
+          try {
+            const mergedPdf = await mergePdfPages(result.originalBuffer, sortedPages);
+            mergedBuffer = mergedPdf.buffer;
+            pdfBase64 = await arrayBufferToBase64(mergedBuffer);
+          } catch (mergeErr) {
+            console.warn("Merge failed, falling back to original PDF", mergeErr);
+            pdfBase64 = await arrayBufferToBase64(result.originalBuffer);
+          }
         } else {
-          // NORMAL mode: Send original PDF as is
-          console.log(`[NORMAL] Sending original PDF for ${result.companyName || result.fileName}...`);
+          // NORMAL mode or Fallback: Send original PDF as is
+          console.log(`[${retryCount > 0 ? 'RETRY/FALLBACK' : 'NORMAL'}] Sending original PDF for ${result.companyName || result.fileName}...`);
           pdfBase64 = await arrayBufferToBase64(result.originalBuffer);
         }
 
@@ -314,6 +320,7 @@ export default function App() {
           errorMessage.includes('aborted') || 
           errorMessage.includes('fetch failed') ||
           errorMessage.includes('NetworkError') ||
+          errorMessage.includes('502') ||
           errorMessage.includes('503') ||
           errorMessage.includes('504') ||
           errorMessage.includes('timeout') ||
