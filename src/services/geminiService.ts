@@ -53,6 +53,7 @@ export async function extractTablesWithGemini(pdfBase64: string, mimeType: strin
 - 항목: 구분(년도), 예상손해율, 실제손해율, 보험금예실차비율
 - 최근 연도 데이터 우선, 중복 금지.
 - 구분 컬럼에서 "년" 과 공백(whitespace) 제거
+- 보험금예실차비율 컬럼에서 "%" 제거. 음수를 괄호("()")로 표현한 경우 "-" 표시로 변환해서 일관성 유지
 `;
 
   console.log(`[Gemini ${VERSION}] Calling API with model: gemini-3-flash-preview, PDF size: ${(pdfBase64.length * 0.75 / 1024).toFixed(2)} KB`);
