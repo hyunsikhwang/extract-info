@@ -193,6 +193,7 @@ export interface ExtractedData {
   table2: ExtractedTable<TableRow>;
   table3: ExtractedTable<TableRow>;
   table4: ExtractedTable<ComparisonTableRow>;
+  table5: ExtractedTable<any>;
   originalBuffer: ArrayBuffer;
   numPages: number;
   error?: string;
@@ -433,6 +434,7 @@ export async function extractTextFromUrl(url: string): Promise<ExtractedData> {
       table2: { data: [], page: null },
       table3: { data: [], page: null },
       table4: { data: [], page: null },
+      table5: { data: [], page: null },
       originalBuffer: arrayBuffer,
       numPages: 0,
       error: err instanceof Error ? err.message : String(err),
@@ -487,6 +489,7 @@ export async function extractTextFromPdf(file: File): Promise<ExtractedData> {
     const table2 = parseTableSolvencyCommon(pageTexts);
     const table3 = parseTableSolvencySelective(pageTexts);
     const table4 = parseTableLossRatio(pageTexts);
+    const table5 = parseTableRiskPremium(pageTexts);
     const companyName = extractCompanyName(pageTexts);
 
     return {
@@ -497,6 +500,7 @@ export async function extractTextFromPdf(file: File): Promise<ExtractedData> {
       table2,
       table3,
       table4,
+      table5,
       originalBuffer: arrayBuffer,
       numPages: pdf.numPages,
       id: Math.random().toString(36).substring(2, 11)
@@ -516,6 +520,7 @@ export async function extractTextFromPdf(file: File): Promise<ExtractedData> {
       table2: { data: [], page: null },
       table3: { data: [], page: null },
       table4: { data: [], page: null },
+      table5: { data: [], page: null },
       originalBuffer: arrayBuffer,
       numPages: 0,
       error: errorMessage,
@@ -838,6 +843,35 @@ function parseTableLossRatio(pageTexts: string[]): ExtractedTable<ComparisonTabl
   }
 
   return { data: rows, page: foundPage };
+}
+
+function parseTableRiskPremium(pageTexts: string[]): ExtractedTable<any> {
+  const keywords = ["위험보험료", "대비", "예상보험금"];
+  let foundPage = -1;
+
+  const strip = (s: string) => s.replace(/\s+/g, '');
+
+  for (let i = 0; i < pageTexts.length; i++) {
+    const strippedPage = strip(pageTexts[i]);
+    
+    let lastIndex = -1;
+    let allFoundInOrder = true;
+    for (const kw of keywords) {
+      const index = strippedPage.indexOf(strip(kw), lastIndex + 1);
+      if (index === -1) {
+        allFoundInOrder = false;
+        break;
+      }
+      lastIndex = index;
+    }
+    
+    if (allFoundInOrder) {
+      foundPage = i + 1;
+      break;
+    }
+  }
+
+  return { data: [], page: foundPage === -1 ? null : foundPage };
 }
 
 function extractRows(text: string, categories: string[]): TableRow[] {

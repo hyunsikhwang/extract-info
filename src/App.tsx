@@ -41,7 +41,16 @@ export default function App() {
     results.flatMap(r => r.geminiData?.solvencyTable || []), 
   [results]);
 
+  const aggregatedRiskPremium = React.useMemo(() => 
+    results.flatMap(r => r.geminiData?.riskPremiumTable || []), 
+  [results]);
+
   const [processingMode, setProcessingMode] = useState<'analysis' | 'full'>('full');
+  const [extractionOptions, setExtractionOptions] = useState({
+    extractSolvency: true,
+    extractComparison: true,
+    extractRiskPremium: true
+  });
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [tokenUsage, setTokenUsage] = useState({ prompt: 0, candidates: 0 });
   const isStoppingRef = React.useRef(false);
@@ -128,15 +137,33 @@ export default function App() {
           if (processingMode === 'full' && !result.error) {
             await runGeminiExtraction(result);
           } else if (processingMode === 'analysis' && !result.error) {
-            // Even in analysis mode, we should generate mergedBuffer if it's FAST
-            const isFast = result.table1.page !== null && result.table2.page !== null && result.table4.page !== null;
+            // Even in analysis mode, we should generate mergedBuffer if possible based on selection
+            const solvencyFound = !extractionOptions.extractSolvency || (result.table1.page !== null && result.table2.page !== null);
+            const comparisonFound = !extractionOptions.extractComparison || (result.table4.page !== null);
+            const riskPremiumFound = !extractionOptions.extractRiskPremium || (result.table5.page !== null);
+            
+            const isFast = solvencyFound && comparisonFound && riskPremiumFound;
+            
             if (isFast) {
               const pages = new Set<number>();
               pages.add(1);
-              if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
-              if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
-              if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
-              if (result.table4.page) { pages.add(result.table4.page); pages.add(result.table4.page + 1); }
+              if (extractionOptions.extractSolvency) {
+                if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
+                if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
+                if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
+              }
+              if (extractionOptions.extractComparison) {
+                if (result.table4.page) { pages.add(result.table4.page); pages.add(result.table4.page + 1); }
+              }
+              if (extractionOptions.extractRiskPremium) {
+                if (result.table5.page) {
+                  for (let p = 0; p <= 6; p++) {
+                    if (result.table5.page + p <= result.numPages) {
+                      pages.add(result.table5.page + p);
+                    }
+                  }
+                }
+              }
               const sortedPages = Array.from(pages).sort((a, b) => a - b);
               try {
                 const mergedPdf = await mergePdfPages(result.originalBuffer, sortedPages);
@@ -169,6 +196,7 @@ export default function App() {
             table2: { data: [], page: null },
             table3: { data: [], page: null },
             table4: { data: [], page: null },
+            table5: { data: [], page: null },
             originalBuffer: new ArrayBuffer(0),
             numPages: 0,
             error: errorMessage,
@@ -226,14 +254,32 @@ export default function App() {
         await runGeminiExtraction(result);
       } else if (processingMode === 'analysis' && !result.error) {
         // Even in analysis mode, generate mergedBuffer for FAST documents
-        const isFast = result.table1.page !== null && result.table2.page !== null && result.table4.page !== null;
+        const solvencyFound = !extractionOptions.extractSolvency || (result.table1.page !== null && result.table2.page !== null);
+        const comparisonFound = !extractionOptions.extractComparison || (result.table4.page !== null);
+        const riskPremiumFound = !extractionOptions.extractRiskPremium || (result.table5.page !== null);
+        
+        const isFast = solvencyFound && comparisonFound && riskPremiumFound;
+
         if (isFast) {
           const pages = new Set<number>();
           pages.add(1);
-          if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
-          if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
-          if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
-          if (result.table4.page) { pages.add(result.table4.page); pages.add(result.table4.page + 1); }
+          if (extractionOptions.extractSolvency) {
+            if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
+            if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
+            if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
+          }
+          if (extractionOptions.extractComparison) {
+            if (result.table4.page) { pages.add(result.table4.page); pages.add(result.table4.page + 1); }
+          }
+          if (extractionOptions.extractRiskPremium) {
+            if (result.table5.page) {
+              for (let p = 0; p <= 6; p++) {
+                if (result.table5.page + p <= result.numPages) {
+                  pages.add(result.table5.page + p);
+                }
+              }
+            }
+          }
           const sortedPages = Array.from(pages).sort((a, b) => a - b);
           try {
             const mergedPdf = await mergePdfPages(result.originalBuffer, sortedPages);
@@ -281,7 +327,12 @@ export default function App() {
     const attemptExtraction = async (): Promise<void> => {
       let mergedBuffer: ArrayBuffer | undefined = undefined;
       try {
-        const isFast = result.table1.page !== null && result.table2.page !== null && result.table4.page !== null;
+        // A document is "mergable" if all selected tables' pages are identified
+        const solvencyFound = !extractionOptions.extractSolvency || (result.table1.page !== null && result.table2.page !== null);
+        const comparisonFound = !extractionOptions.extractComparison || (result.table4.page !== null);
+        const riskPremiumFound = !extractionOptions.extractRiskPremium || (result.table5.page !== null);
+        
+        const isFast = solvencyFound && comparisonFound && riskPremiumFound;
         let pdfBase64 = '';
 
         // If we already failed once and are retrying, or if it's not fast mode, use original
@@ -289,10 +340,23 @@ export default function App() {
           console.log(`[FAST] Merging relevant pages for ${result.companyName}...`);
           const pages = new Set<number>();
           pages.add(1);
-          if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
-          if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
-          if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
-          if (result.table4.page) { pages.add(result.table4.page); pages.add(result.table4.page + 1); }
+          if (extractionOptions.extractSolvency) {
+            if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
+            if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
+            if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
+          }
+          if (extractionOptions.extractComparison) {
+            if (result.table4.page) { pages.add(result.table4.page); pages.add(result.table4.page + 1); }
+          }
+          if (extractionOptions.extractRiskPremium) {
+            if (result.table5.page) {
+              for (let p = 0; p <= 6; p++) {
+                if (result.table5.page + p <= result.numPages) {
+                  pages.add(result.table5.page + p);
+                }
+              }
+            }
+          }
 
           const sortedPages = Array.from(pages).sort((a, b) => a - b);
           try {
@@ -309,7 +373,7 @@ export default function App() {
           pdfBase64 = await arrayBufferToBase64(result.originalBuffer);
         }
 
-        const geminiResult = await extractTablesWithGemini(pdfBase64);
+        const geminiResult = await extractTablesWithGemini(pdfBase64, 'application/pdf', extractionOptions);
         
         // Update the specific result with the gemini data using ID
         setResults(prev => {
@@ -384,7 +448,13 @@ export default function App() {
     setIsDownloading(downloadId);
     try {
       // For tables 2, 3, 4, we take 2 pages if possible
-      const endPage = tableName === 'company_info' ? startPage : Math.min(startPage + 1, result.numPages);
+      // For table 5, we take 7 pages
+      let endPage = startPage;
+      if (tableName === 'table5') {
+        endPage = Math.min(startPage + 6, result.numPages);
+      } else if (tableName !== 'company_info') {
+        endPage = Math.min(startPage + 1, result.numPages);
+      }
       
       const pdfBytes = await slicePdfPage(result.originalBuffer, startPage, endPage);
       const blob = new Blob([pdfBytes], { type: 'application/pdf' });
@@ -450,6 +520,20 @@ export default function App() {
     return [header, ...rows].join('\n');
   };
 
+  const generateRiskPremiumTxt = () => {
+    const header = [
+      '회사명', '연도', '경과기간', '1년', '2년', '3년', '4년', '5년', '6년', '7년', '8년', '9년', '10년', 
+      '11년-15년', '16년-20년', '21년-25년', '26년-30년', '30년이후', '현재가치'
+    ].join('\t');
+    const rows = aggregatedRiskPremium.map(row => 
+      [
+        row.companyName, row.year, row.category, row.y1, row.y2, row.y3, row.y4, row.y5, row.y6, row.y7, 
+        row.y8, row.y9, row.y10, row.y11_15, row.y16_20, row.y21_25, row.y26_30, row.y30_plus, row.presentValue
+      ].join('\t')
+    );
+    return [header, ...rows].join('\n');
+  };
+
   const toggleFullText = (index: number) => {
     setShowFullText(prev => ({
       ...prev,
@@ -457,13 +541,20 @@ export default function App() {
     }));
   };
 
-  const fastCount = results.filter(r => r.table1.page !== null && r.table2.page !== null && r.table4.page !== null).length;
+  const isMergable = (data: ExtractedData) => {
+    const solvencyFound = !extractionOptions.extractSolvency || (data.table1.page !== null && data.table2.page !== null);
+    const comparisonFound = !extractionOptions.extractComparison || (data.table4.page !== null);
+    const riskPremiumFound = !extractionOptions.extractRiskPremium || (data.table5.page !== null);
+    return solvencyFound && comparisonFound && riskPremiumFound;
+  };
+
+  const fastCount = results.filter(isMergable).length;
   const normalCount = results.length - fastCount;
 
-  // Gemini 3 Flash Pricing (Actual as of April 2024)
-  // Input: $0.5 / 1M tokens (< 128k context) -> $0.0000005 per token
-  // Output: $3.0 / 1M tokens (< 128k context) -> $0.000003 per token
-  // Exchange Rate: 1 USD = 1,400 KRW (Approximate)
+  // Gemini 3 Flash Pricing
+  // Input: $0.5 / 1M tokens -> $0.0000005 per token
+  // Output: $3.0 / 1M tokens -> $0.000003 per token
+  // Exchange Rate: 1 USD = 1,500 KRW (Approximate)
   const estimatedCostUSD = (tokenUsage.prompt * 0.0000005) + (tokenUsage.candidates * 0.000003);
   const estimatedCostKRW = estimatedCostUSD * 1500;
 
@@ -526,20 +617,115 @@ export default function App() {
         </header>
 
         <div className="space-y-4 mb-8">
-          <div className="flex justify-center gap-1.5 mb-2">
-            <button 
-              onClick={() => { setInputMode('url'); setError(null); }}
-              className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${inputMode === 'url' ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-100'}`}
-            >
-              URL 입력
-            </button>
-            <button 
-              onClick={() => { setInputMode('file'); setError(null); }}
-              className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${inputMode === 'file' ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-100'}`}
-            >
-              파일 업로드
-            </button>
+          <div className="flex flex-col md:flex-row justify-center items-center gap-4 mb-2">
+            <div className="flex bg-white p-1 rounded-full shadow-sm border border-gray-100">
+              <button 
+                onClick={() => { setInputMode('url'); setError(null); }}
+                className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${inputMode === 'url' ? 'bg-blue-600 text-white shadow-md' : 'bg-transparent text-gray-500 hover:bg-gray-50'}`}
+              >
+                URL 입력
+              </button>
+              <button 
+                onClick={() => { setInputMode('file'); setError(null); }}
+                className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${inputMode === 'file' ? 'bg-blue-600 text-white shadow-md' : 'bg-transparent text-gray-500 hover:bg-gray-50'}`}
+              >
+                파일 업로드
+              </button>
+            </div>
+
+            <div className="flex bg-white p-1 rounded-full shadow-sm border border-gray-100">
+              <button 
+                onClick={() => setProcessingMode('full')}
+                className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${processingMode === 'full' ? 'bg-blue-600 text-white shadow-md' : 'bg-transparent text-gray-400 hover:bg-gray-50'}`}
+                title="Gemini를 사용하여 상세 정보를 추출합니다."
+              >
+                상세 추출 (FULL)
+              </button>
+              <button 
+                onClick={() => setProcessingMode('analysis')}
+                className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${processingMode === 'analysis' ? 'bg-blue-600 text-white shadow-md' : 'bg-transparent text-gray-400 hover:bg-gray-50'}`}
+                title="로컬에서 PDF 구조만 분석합니다. (비용 없음)"
+              >
+                빠른 분석 (ONLY)
+              </button>
+            </div>
           </div>
+
+          <AnimatePresence>
+            {processingMode === 'full' && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="flex flex-wrap justify-center items-center gap-3 py-2 px-4 bg-white/50 rounded-2xl border border-gray-100/50 backdrop-blur-sm">
+                  <span className="text-[10px] font-bold text-gray-500 mr-2 uppercase tracking-wider">추출 항목 선택:</span>
+                  
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <input 
+                      type="checkbox" 
+                      className="hidden" 
+                      checked={extractionOptions.extractSolvency && extractionOptions.extractComparison && extractionOptions.extractRiskPremium}
+                      onChange={(e) => {
+                        const val = e.target.checked;
+                        setExtractionOptions({
+                          extractSolvency: val,
+                          extractComparison: val,
+                          extractRiskPremium: val
+                        });
+                      }}
+                    />
+                    <div className={`w-4 h-4 rounded-md flex items-center justify-center border-2 transition-all ${extractionOptions.extractSolvency && extractionOptions.extractComparison && extractionOptions.extractRiskPremium ? 'bg-blue-600 border-blue-600 shadow-sm' : 'border-gray-300 group-hover:border-blue-400'}`}>
+                      {(extractionOptions.extractSolvency && extractionOptions.extractComparison && extractionOptions.extractRiskPremium) && <Check size={10} className="text-white" strokeWidth={4} />}
+                    </div>
+                    <span className={`text-xs font-bold ${extractionOptions.extractSolvency && extractionOptions.extractComparison && extractionOptions.extractRiskPremium ? 'text-blue-700' : 'text-gray-500'}`}>전체</span>
+                  </label>
+
+                  <div className="w-px h-3 bg-gray-200 mx-2" />
+
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <input 
+                      type="checkbox" 
+                      className="hidden" 
+                      checked={extractionOptions.extractSolvency}
+                      onChange={(e) => setExtractionOptions(prev => ({ ...prev, extractSolvency: e.target.checked }))}
+                    />
+                    <div className={`w-4 h-4 rounded-md flex items-center justify-center border-2 transition-all ${extractionOptions.extractSolvency ? 'bg-blue-600 border-blue-600 shadow-sm' : 'border-gray-300 group-hover:border-blue-400'}`}>
+                      {extractionOptions.extractSolvency && <Check size={10} className="text-white" strokeWidth={4} />}
+                    </div>
+                    <span className={`text-xs font-bold ${extractionOptions.extractSolvency ? 'text-blue-700' : 'text-gray-500'}`}>지급여력비율</span>
+                  </label>
+
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <input 
+                      type="checkbox" 
+                      className="hidden" 
+                      checked={extractionOptions.extractComparison}
+                      onChange={(e) => setExtractionOptions(prev => ({ ...prev, extractComparison: e.target.checked }))}
+                    />
+                    <div className={`w-4 h-4 rounded-md flex items-center justify-center border-2 transition-all ${extractionOptions.extractComparison ? 'bg-blue-600 border-blue-600 shadow-sm' : 'border-gray-300 group-hover:border-blue-400'}`}>
+                      {extractionOptions.extractComparison && <Check size={10} className="text-white" strokeWidth={4} />}
+                    </div>
+                    <span className={`text-xs font-bold ${extractionOptions.extractComparison ? 'text-blue-700' : 'text-gray-500'}`}>보험금 예실차</span>
+                  </label>
+
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <input 
+                      type="checkbox" 
+                      className="hidden" 
+                      checked={extractionOptions.extractRiskPremium}
+                      onChange={(e) => setExtractionOptions(prev => ({ ...prev, extractRiskPremium: e.target.checked }))}
+                    />
+                    <div className={`w-4 h-4 rounded-md flex items-center justify-center border-2 transition-all ${extractionOptions.extractRiskPremium ? 'bg-blue-600 border-blue-600 shadow-sm' : 'border-gray-300 group-hover:border-blue-400'}`}>
+                      {extractionOptions.extractRiskPremium && <Check size={10} className="text-white" strokeWidth={4} />}
+                    </div>
+                    <span className={`text-xs font-bold ${extractionOptions.extractRiskPremium ? 'text-blue-700' : 'text-gray-500'}`}>위험보험료 대비 예상</span>
+                  </label>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {inputMode === 'url' ? (
             <motion.div
@@ -805,6 +991,91 @@ export default function App() {
                   </table>
                 </div>
               </div>
+
+              <div className="mt-8">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-bold flex items-center gap-2">
+                    <Table className="text-blue-600" size={20} />
+                    3. 위험보험료 대비 예상보험금 통합 테이블
+                  </h2>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => copyToClipboard(generateRiskPremiumTxt(), 'riskPremium')}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-lg text-[10px] font-bold transition-all border border-gray-200"
+                    >
+                      {copyStatus === 'riskPremium' ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}
+                      {copyStatus === 'riskPremium' ? '복사됨' : '클립보드 복사'}
+                    </button>
+                    <button
+                      onClick={() => downloadAsTxt(generateRiskPremiumTxt(), '위험보험료_대비_예상보험금_통합.txt')}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg text-[10px] font-bold transition-all border border-blue-100"
+                    >
+                      <Download size={14} />
+                      TXT 다운로드
+                    </button>
+                  </div>
+                </div>
+                <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
+                  <table className="w-full text-[10px] text-left border-collapse min-w-[1800px]">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-100">
+                        <th className="p-2 font-bold border-r border-gray-100 sticky left-0 bg-gray-50 z-10">회사명</th>
+                        <th className="p-2 font-bold border-r border-gray-100">연도</th>
+                        <th className="p-2 font-bold border-r border-gray-100">경과기간</th>
+                        <th className="p-2 font-bold border-r border-gray-100">1년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">2년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">3년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">4년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">5년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">6년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">7년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">8년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">9년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">10년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">11년-15년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">16년-20년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">21년-25년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">26년-30년</th>
+                        <th className="p-2 font-bold border-r border-gray-100">30년이후</th>
+                        <th className="p-2 font-bold">현재가치</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {aggregatedRiskPremium.length > 0 ? (
+                        aggregatedRiskPremium.map((row, idx) => (
+                          <tr key={idx} className="hover:bg-blue-50/30 transition-colors">
+                            <td className="p-2 border-r border-gray-100 font-medium sticky left-0 bg-white z-10">{row.companyName}</td>
+                            <td className="p-2 border-r border-gray-100">{row.year}</td>
+                            <td className="p-2 border-r border-gray-100">{row.category}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y1}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y2}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y3}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y4}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y5}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y6}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y7}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y8}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y9}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y10}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y11_15}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y16_20}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y21_25}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y26_30}</td>
+                            <td className="p-2 border-r border-gray-100 text-right">{row.y30_plus}</td>
+                            <td className="p-2 text-right">{row.presentValue}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={19} className="p-8 text-center text-gray-400 italic">
+                            {isLoading ? "데이터 분석 중..." : "추출된 데이터가 없습니다."}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           )}
 
@@ -826,7 +1097,7 @@ export default function App() {
                         문서 #{resultIndex + 1} {data.error ? '추출 실패' : '추출 완료'}
                       </h2>
                       {!data.error && (
-                        data.table1.page !== null && data.table2.page !== null && data.table4.page !== null ? (
+                        isMergable(data) ? (
                           <span className="px-1.5 py-0.5 bg-blue-600 text-white text-[8px] font-black rounded-sm tracking-tighter">FAST</span>
                         ) : (
                           <span className="px-1.5 py-0.5 bg-gray-200 text-gray-600 text-[8px] font-black rounded-sm tracking-tighter">NORMAL</span>
@@ -1054,6 +1325,36 @@ export default function App() {
                         )}
                       </div>
                       <span className="text-[9px] font-mono text-gray-400">TABLE_04</span>
+                    </div>
+
+                    {/* 6. Table 5 */}
+                    <div className="p-3 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-1.5">
+                          <Table className="text-blue-600" size={16} />
+                          <h3 className="font-bold text-xs">6. 위험보험료 대비 예상보험금</h3>
+                        </div>
+                        {data.table5.page && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded border border-blue-100">
+                              PAGE {data.table5.page}-{Math.min(data.table5.page + 6, data.numPages)}
+                            </span>
+                            <button
+                              onClick={() => downloadPages(resultIndex, data.table5.page!, 'table5')}
+                              disabled={isDownloading !== null}
+                              className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
+                              title="7페이지 다운로드"
+                            >
+                              {isDownloading === `${resultIndex}-table5` ? (
+                                <Loader2 size={12} className="animate-spin" />
+                              ) : (
+                                <Download size={12} />
+                              )}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <span className="text-[9px] font-mono text-gray-400">TABLE_05</span>
                     </div>
                   </section>
 
