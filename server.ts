@@ -166,13 +166,11 @@ async function startServer() {
       try {
         await pipeline(response.data, res);
       } catch (err: any) {
-        if (err.code === 'ERR_STREAM_PREMATURE_CLOSE') {
-          console.log('Stream closed prematurely by client or server');
+        if (err.code === 'ERR_STREAM_PREMATURE_CLOSE' || err.message === 'aborted') {
+          console.log('Stream closed prematurely or aborted');
         } else {
           console.error('Pipeline error:', err);
         }
-        // If headers are already sent, we can't send a 500. 
-        // The client will see a truncated file.
       }
 
     } catch (error: any) {

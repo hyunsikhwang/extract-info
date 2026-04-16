@@ -55,6 +55,14 @@ export default function App() {
   const [tokenUsage, setTokenUsage] = useState({ prompt: 0, candidates: 0 });
   const isStoppingRef = React.useRef(false);
 
+  // Strict FAST mode criteria: Table 1, 2, 4, 5 all found
+  const isMergable = (data: ExtractedData) => {
+    return data.table1.page !== null && 
+           data.table2.page !== null && 
+           data.table4.page !== null && 
+           data.table5.page !== null;
+  };
+
   const resetAll = () => {
     if (window.confirm('모든 데이터와 설정을 초기화하시겠습니까?')) {
       setUrlInput('');
@@ -137,12 +145,8 @@ export default function App() {
           if (processingMode === 'full' && !result.error) {
             await runGeminiExtraction(result);
           } else if (processingMode === 'analysis' && !result.error) {
-            // Even in analysis mode, we should generate mergedBuffer if possible based on selection
-            const solvencyFound = !extractionOptions.extractSolvency || (result.table1.page !== null && result.table2.page !== null);
-            const comparisonFound = !extractionOptions.extractComparison || (result.table4.page !== null);
-            const riskPremiumFound = !extractionOptions.extractRiskPremium || (result.table5.page !== null);
-            
-            const isFast = solvencyFound && comparisonFound && riskPremiumFound;
+            // Even in analysis mode, we should generate mergedBuffer if possible
+            const isFast = isMergable(result);
             
             if (isFast) {
               const pages = new Set<number>();
@@ -254,11 +258,7 @@ export default function App() {
         await runGeminiExtraction(result);
       } else if (processingMode === 'analysis' && !result.error) {
         // Even in analysis mode, generate mergedBuffer for FAST documents
-        const solvencyFound = !extractionOptions.extractSolvency || (result.table1.page !== null && result.table2.page !== null);
-        const comparisonFound = !extractionOptions.extractComparison || (result.table4.page !== null);
-        const riskPremiumFound = !extractionOptions.extractRiskPremium || (result.table5.page !== null);
-        
-        const isFast = solvencyFound && comparisonFound && riskPremiumFound;
+        const isFast = isMergable(result);
 
         if (isFast) {
           const pages = new Set<number>();
@@ -327,12 +327,7 @@ export default function App() {
     const attemptExtraction = async (): Promise<void> => {
       let mergedBuffer: ArrayBuffer | undefined = undefined;
       try {
-        // A document is "mergable" if all selected tables' pages are identified
-        const solvencyFound = !extractionOptions.extractSolvency || (result.table1.page !== null && result.table2.page !== null);
-        const comparisonFound = !extractionOptions.extractComparison || (result.table4.page !== null);
-        const riskPremiumFound = !extractionOptions.extractRiskPremium || (result.table5.page !== null);
-        
-        const isFast = solvencyFound && comparisonFound && riskPremiumFound;
+        const isFast = isMergable(result);
         let pdfBase64 = '';
 
         // If we already failed once and are retrying, or if it's not fast mode, use original
@@ -539,13 +534,6 @@ export default function App() {
       ...prev,
       [index]: !prev[index]
     }));
-  };
-
-  const isMergable = (data: ExtractedData) => {
-    const solvencyFound = !extractionOptions.extractSolvency || (data.table1.page !== null && data.table2.page !== null);
-    const comparisonFound = !extractionOptions.extractComparison || (data.table4.page !== null);
-    const riskPremiumFound = !extractionOptions.extractRiskPremium || (data.table5.page !== null);
-    return solvencyFound && comparisonFound && riskPremiumFound;
   };
 
   const fastCount = results.filter(isMergable).length;

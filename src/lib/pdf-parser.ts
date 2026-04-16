@@ -380,7 +380,12 @@ export async function extractTextFromUrl(url: string): Promise<ExtractedData> {
         for (let i = 0; i < Math.min(15, pdfCandidates.length); i++) {
           const candidate = pdfCandidates[i];
           try {
-            const loadingTask = pdfjsLib.getDocument({ data: candidate.content.slice(0) });
+            const loadingTask = pdfjsLib.getDocument({ 
+              data: candidate.content.slice(0),
+              stopAtErrors: false,
+              disableAutoFetch: true,
+              disableStream: true
+            });
             const pdf = await loadingTask.promise;
             const firstPage = await pdf.getPage(1);
             const textContent = await firstPage.getTextContent();
@@ -466,6 +471,8 @@ export async function extractTextFromPdf(file: File): Promise<ExtractedData> {
       data: pdfjsBuffer,
       // Some PDFs might have minor issues that can be ignored
       stopAtErrors: false,
+      disableAutoFetch: true,
+      disableStream: true
     });
     const pdf = await loadingTask.promise;
     
@@ -508,8 +515,13 @@ export async function extractTextFromPdf(file: File): Promise<ExtractedData> {
   } catch (err) {
     console.error('PDF analysis failed:', err);
     let errorMessage = `PDF 분석 실패: ${err instanceof Error ? err.message : '알 수 없는 오류'}`;
-    if (err instanceof Error && err.message.includes('Password')) {
-      errorMessage = '이 PDF는 비밀번호로 보호되어 있어 처리할 수 없습니다.';
+    
+    if (err instanceof Error) {
+      if (err.message.includes('Password')) {
+        errorMessage = '이 PDF는 비밀번호로 보호되어 있어 처리할 수 없습니다.';
+      } else if (err.message.includes('Invalid Root reference')) {
+        errorMessage = 'PDF 구조가 손상되었거나 유효하지 않습니다. (Invalid Root reference) 파일이 정상적으로 다운로드되었는지 확인해주세요.';
+      }
     }
     
     return {
