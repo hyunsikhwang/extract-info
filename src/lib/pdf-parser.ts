@@ -191,7 +191,8 @@ export interface ExtractedData {
   fullText: string;
   table1: ExtractedTable<TableRow>;
   table2: ExtractedTable<TableRow>;
-  table3: ExtractedTable<ComparisonTableRow>;
+  table3: ExtractedTable<TableRow>;
+  table4: ExtractedTable<ComparisonTableRow>;
   originalBuffer: ArrayBuffer;
   numPages: number;
   error?: string;
@@ -431,6 +432,7 @@ export async function extractTextFromUrl(url: string): Promise<ExtractedData> {
       table1: { data: [], page: null },
       table2: { data: [], page: null },
       table3: { data: [], page: null },
+      table4: { data: [], page: null },
       originalBuffer: arrayBuffer,
       numPages: 0,
       error: err instanceof Error ? err.message : String(err),
@@ -481,9 +483,10 @@ export async function extractTextFromPdf(file: File): Promise<ExtractedData> {
       }
     }
 
-    const table1 = parseTable1(pageTexts);
-    const table2 = parseTable2(pageTexts);
-    const table3 = parseTable3(pageTexts);
+    const table1 = parseTableSolvencyTotal(pageTexts);
+    const table2 = parseTableSolvencyCommon(pageTexts);
+    const table3 = parseTableSolvencySelective(pageTexts);
+    const table4 = parseTableLossRatio(pageTexts);
     const companyName = extractCompanyName(pageTexts);
 
     return {
@@ -493,6 +496,7 @@ export async function extractTextFromPdf(file: File): Promise<ExtractedData> {
       table1,
       table2,
       table3,
+      table4,
       originalBuffer: arrayBuffer,
       numPages: pdf.numPages,
       id: Math.random().toString(36).substring(2, 11)
@@ -511,6 +515,7 @@ export async function extractTextFromPdf(file: File): Promise<ExtractedData> {
       table1: { data: [], page: null },
       table2: { data: [], page: null },
       table3: { data: [], page: null },
+      table4: { data: [], page: null },
       originalBuffer: arrayBuffer,
       numPages: 0,
       error: errorMessage,
@@ -592,7 +597,50 @@ export async function mergePdfPages(arrayBuffer: ArrayBuffer, pageNumbers: numbe
   return await newPdf.save();
 }
 
-function parseTable1(pageTexts: string[]): ExtractedTable<TableRow> {
+function parseTableSolvencyTotal(pageTexts: string[]): ExtractedTable<TableRow> {
+  // Look for "지급여력비율 총괄"
+  const keywords = ["지급여력비율", "총괄"];
+  let foundPage = -1;
+  let subText = "";
+
+  const strip = (s: string) => s.replace(/\s+/g, '');
+
+  for (let i = 0; i < pageTexts.length; i++) {
+    const strippedPage = strip(pageTexts[i]);
+    
+    let lastIndex = -1;
+    let allFoundInOrder = true;
+    for (const kw of keywords) {
+      const index = strippedPage.indexOf(strip(kw), lastIndex + 1);
+      if (index === -1) {
+        allFoundInOrder = false;
+        break;
+      }
+      lastIndex = index;
+    }
+    
+    if (allFoundInOrder) {
+      foundPage = i + 1;
+      subText = pageTexts[i] + (pageTexts[i+1] || "");
+      break;
+    }
+  }
+
+  if (foundPage === -1) return { data: [], page: null };
+  
+  const rowCategories = [
+    "지급여력비율",
+    "지급여력금액",
+    "지급여력기준금액"
+  ];
+
+  return {
+    data: extractRows(subText, rowCategories),
+    page: foundPage
+  };
+}
+
+function parseTableSolvencyCommon(pageTexts: string[]): ExtractedTable<TableRow> {
   // Look for "공통적용 경과조치 관련"
   const keywords = ["공통적용", "경과조치", "관련"];
   let foundPage = -1;
@@ -628,7 +676,7 @@ function parseTable1(pageTexts: string[]): ExtractedTable<TableRow> {
     return { data: [], page: null };
   }
   
-  // Define expected rows for Table 1
+  // Define expected rows for Table 2 (Common)
   const rowCategories = [
     "지급여력비율 (%)",
     "지급여력금액",
@@ -643,7 +691,7 @@ function parseTable1(pageTexts: string[]): ExtractedTable<TableRow> {
   };
 }
 
-function parseTable2(pageTexts: string[]): ExtractedTable<TableRow> {
+function parseTableSolvencySelective(pageTexts: string[]): ExtractedTable<TableRow> {
   // Look for "자본감소분 경과조치"
   const keywords = ["자본감소분", "경과조치"];
   let foundPage = -1;
@@ -676,7 +724,7 @@ function parseTable2(pageTexts: string[]): ExtractedTable<TableRow> {
 
   if (foundPage === -1) return { data: [], page: null };
 
-  // Define expected rows for Table 2
+  // Define expected rows for Table 3 (Selective)
   const rowCategories = [
     "지급여력비율 (%)",
     "지급여력금액",
@@ -698,7 +746,7 @@ function parseTable2(pageTexts: string[]): ExtractedTable<TableRow> {
   return { data: rows, page: foundPage };
 }
 
-function parseTable3(pageTexts: string[]): ExtractedTable<ComparisonTableRow> {
+function parseTableLossRatio(pageTexts: string[]): ExtractedTable<ComparisonTableRow> {
   // Use more flexible markers to handle potential numbering or spacing issues
   const sectionMarker = "보험계약부채 및 가정 관련 현황";
   const subSectionMarker = "최적가정";

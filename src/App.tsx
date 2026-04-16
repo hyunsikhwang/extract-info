@@ -129,13 +129,14 @@ export default function App() {
             await runGeminiExtraction(result);
           } else if (processingMode === 'analysis' && !result.error) {
             // Even in analysis mode, we should generate mergedBuffer if it's FAST
-            const isFast = result.table1.page !== null && result.table3.page !== null;
+            const isFast = result.table1.page !== null && result.table2.page !== null && result.table4.page !== null;
             if (isFast) {
               const pages = new Set<number>();
               pages.add(1);
               if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
               if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
               if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
+              if (result.table4.page) { pages.add(result.table4.page); pages.add(result.table4.page + 1); }
               const sortedPages = Array.from(pages).sort((a, b) => a - b);
               try {
                 const mergedPdf = await mergePdfPages(result.originalBuffer, sortedPages);
@@ -167,6 +168,7 @@ export default function App() {
             table1: { data: [], page: null },
             table2: { data: [], page: null },
             table3: { data: [], page: null },
+            table4: { data: [], page: null },
             originalBuffer: new ArrayBuffer(0),
             numPages: 0,
             error: errorMessage,
@@ -224,13 +226,14 @@ export default function App() {
         await runGeminiExtraction(result);
       } else if (processingMode === 'analysis' && !result.error) {
         // Even in analysis mode, generate mergedBuffer for FAST documents
-        const isFast = result.table1.page !== null && result.table3.page !== null;
+        const isFast = result.table1.page !== null && result.table2.page !== null && result.table4.page !== null;
         if (isFast) {
           const pages = new Set<number>();
           pages.add(1);
           if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
           if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
           if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
+          if (result.table4.page) { pages.add(result.table4.page); pages.add(result.table4.page + 1); }
           const sortedPages = Array.from(pages).sort((a, b) => a - b);
           try {
             const mergedPdf = await mergePdfPages(result.originalBuffer, sortedPages);
@@ -278,7 +281,7 @@ export default function App() {
     const attemptExtraction = async (): Promise<void> => {
       let mergedBuffer: ArrayBuffer | undefined = undefined;
       try {
-        const isFast = result.table1.page !== null && result.table3.page !== null;
+        const isFast = result.table1.page !== null && result.table2.page !== null && result.table4.page !== null;
         let pdfBase64 = '';
 
         // If we already failed once and are retrying, or if it's not fast mode, use original
@@ -289,6 +292,7 @@ export default function App() {
           if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
           if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
           if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
+          if (result.table4.page) { pages.add(result.table4.page); pages.add(result.table4.page + 1); }
 
           const sortedPages = Array.from(pages).sort((a, b) => a - b);
           try {
@@ -453,15 +457,15 @@ export default function App() {
     }));
   };
 
-  const fastCount = results.filter(r => r.table1.page !== null && r.table3.page !== null).length;
+  const fastCount = results.filter(r => r.table1.page !== null && r.table2.page !== null && r.table4.page !== null).length;
   const normalCount = results.length - fastCount;
 
-  // Gemini 1.5 Flash Pricing (Actual as of April 2024)
-  // Input: $0.075 / 1M tokens (< 128k context) -> $0.000000075 per token
-  // Output: $0.30 / 1M tokens (< 128k context) -> $0.0000003 per token
+  // Gemini 3 Flash Pricing (Actual as of April 2024)
+  // Input: $0.5 / 1M tokens (< 128k context) -> $0.0000005 per token
+  // Output: $3.0 / 1M tokens (< 128k context) -> $0.000003 per token
   // Exchange Rate: 1 USD = 1,400 KRW (Approximate)
-  const estimatedCostUSD = (tokenUsage.prompt * 0.000000075) + (tokenUsage.candidates * 0.0000003);
-  const estimatedCostKRW = estimatedCostUSD * 1400;
+  const estimatedCostUSD = (tokenUsage.prompt * 0.0000005) + (tokenUsage.candidates * 0.000003);
+  const estimatedCostKRW = estimatedCostUSD * 1500;
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans p-4 md:p-8">
@@ -527,7 +531,7 @@ export default function App() {
               onClick={() => { setInputMode('url'); setError(null); }}
               className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${inputMode === 'url' ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-100'}`}
             >
-              URL 여러 개 입력
+              URL 입력
             </button>
             <button 
               onClick={() => { setInputMode('file'); setError(null); }}
@@ -822,7 +826,7 @@ export default function App() {
                         문서 #{resultIndex + 1} {data.error ? '추출 실패' : '추출 완료'}
                       </h2>
                       {!data.error && (
-                        data.table1.page !== null && data.table3.page !== null ? (
+                        data.table1.page !== null && data.table2.page !== null && data.table4.page !== null ? (
                           <span className="px-1.5 py-0.5 bg-blue-600 text-white text-[8px] font-black rounded-sm tracking-tighter">FAST</span>
                         ) : (
                           <span className="px-1.5 py-0.5 bg-gray-200 text-gray-600 text-[8px] font-black rounded-sm tracking-tighter">NORMAL</span>
@@ -937,7 +941,7 @@ export default function App() {
                       <div className="flex items-center gap-3">
                         <div className="flex items-center gap-1.5">
                           <Table className="text-blue-600" size={16} />
-                          <h3 className="font-bold text-xs">2. 공통적용 경과조치관련</h3>
+                          <h3 className="font-bold text-xs">2. 지급여력비율</h3>
                         </div>
                         {data.table1.page && (
                           <div className="flex items-center gap-1.5">
@@ -967,7 +971,7 @@ export default function App() {
                       <div className="flex items-center gap-3">
                         <div className="flex items-center gap-1.5">
                           <Table className="text-blue-600" size={16} />
-                          <h3 className="font-bold text-xs">3. 자본감소분 경과조치</h3>
+                          <h3 className="font-bold text-xs">3. 기본/보완자본</h3>
                         </div>
                         {data.table2.page && (
                           <div className="flex items-center gap-1.5">
@@ -997,7 +1001,7 @@ export default function App() {
                       <div className="flex items-center gap-3">
                         <div className="flex items-center gap-1.5">
                           <Table className="text-blue-600" size={16} />
-                          <h3 className="font-bold text-xs">4. 보험금 예실차비율</h3>
+                          <h3 className="font-bold text-xs">4. 자본감소분 경과조치</h3>
                         </div>
                         {data.table3.page && (
                           <div className="flex items-center gap-1.5">
@@ -1020,6 +1024,36 @@ export default function App() {
                         )}
                       </div>
                       <span className="text-[9px] font-mono text-gray-400">TABLE_03</span>
+                    </div>
+
+                    {/* 5. Table 4 */}
+                    <div className="p-3 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-1.5">
+                          <Table className="text-blue-600" size={16} />
+                          <h3 className="font-bold text-xs">5. 보험금 예실차비율</h3>
+                        </div>
+                        {data.table4.page && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded border border-blue-100">
+                              PAGE {data.table4.page}-{Math.min(data.table4.page + 1, data.numPages)}
+                            </span>
+                            <button
+                              onClick={() => downloadPages(resultIndex, data.table4.page!, 'table4')}
+                              disabled={isDownloading !== null}
+                              className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
+                              title="2페이지 다운로드"
+                            >
+                              {isDownloading === `${resultIndex}-table4` ? (
+                                <Loader2 size={12} className="animate-spin" />
+                              ) : (
+                                <Download size={12} />
+                              )}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <span className="text-[9px] font-mono text-gray-400">TABLE_04</span>
                     </div>
                   </section>
 
