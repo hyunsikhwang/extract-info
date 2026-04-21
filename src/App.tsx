@@ -708,7 +708,7 @@ export default function App() {
                     <div className={`w-4 h-4 rounded-md flex items-center justify-center border-2 transition-all ${extractionOptions.extractRiskPremium ? 'bg-blue-600 border-blue-600 shadow-sm' : 'border-gray-300 group-hover:border-blue-400'}`}>
                       {extractionOptions.extractRiskPremium && <Check size={10} className="text-white" strokeWidth={4} />}
                     </div>
-                    <span className={`text-xs font-bold ${extractionOptions.extractRiskPremium ? 'text-blue-700' : 'text-gray-500'}`}>위험보험료 대비 예상</span>
+                    <span className={`text-xs font-bold ${extractionOptions.extractRiskPremium ? 'text-blue-700' : 'text-gray-500'}`}>위험보험료 대비 예상보험금</span>
                   </label>
                 </div>
               </motion.div>
