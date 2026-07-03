@@ -614,6 +614,24 @@ export async function mergePdfPages(arrayBuffer: ArrayBuffer, pageNumbers: numbe
   return await newPdf.save();
 }
 
+function isTableOfContentsPage(text: string, pageIndex: number): boolean {
+  // Table of contents is almost always in the first 5 pages
+  if (pageIndex > 5) return false;
+  
+  const clean = text.replace(/\s+/g, '');
+  if (clean.includes("목차") || clean.includes("차례") || clean.includes("CONTENTS") || clean.includes("Contents")) {
+    return true;
+  }
+  
+  // Check for leader dots or dotted lines typical of table of contents
+  const dotsMatch = text.match(/[\.·ㆍ…_-]{4,}/g);
+  if (dotsMatch && dotsMatch.length >= 3) {
+    return true;
+  }
+  
+  return false;
+}
+
 function parseTableSolvencyTotal(pageTexts: string[]): ExtractedTable<TableRow> {
   // Look for "지급여력비율 총괄"
   const keywords = ["지급여력비율", "총괄"];
@@ -623,6 +641,7 @@ function parseTableSolvencyTotal(pageTexts: string[]): ExtractedTable<TableRow> 
   const strip = (s: string) => s.replace(/\s+/g, '');
 
   for (let i = 0; i < pageTexts.length; i++) {
+    if (isTableOfContentsPage(pageTexts[i], i)) continue;
     const strippedPage = strip(pageTexts[i]);
     
     let lastIndex = -1;
@@ -643,6 +662,18 @@ function parseTableSolvencyTotal(pageTexts: string[]): ExtractedTable<TableRow> 
     }
   }
 
+  if (foundPage === -1) {
+    for (let i = 0; i < pageTexts.length; i++) {
+      if (isTableOfContentsPage(pageTexts[i], i)) continue;
+      const p = pageTexts[i];
+      if (p.includes("지급여력비율") && p.includes("경과조치")) {
+        foundPage = i + 1;
+        subText = pageTexts[i] + (pageTexts[i+1] || "");
+        break;
+      }
+    }
+  }
+
   if (foundPage === -1) return { data: [], page: null };
   
   const rowCategories = [
@@ -658,8 +689,8 @@ function parseTableSolvencyTotal(pageTexts: string[]): ExtractedTable<TableRow> 
 }
 
 function parseTableSolvencyCommon(pageTexts: string[]): ExtractedTable<TableRow> {
-  // Look for "공통적용 경과조치 관련"
-  const keywords = ["공통적용", "경과조치", "관련"];
+  // Look for "공통적용 경과조치"
+  const keywords = ["공통적용", "경과조치"];
   let foundPage = -1;
   let subText = "";
 
@@ -667,6 +698,7 @@ function parseTableSolvencyCommon(pageTexts: string[]): ExtractedTable<TableRow>
   const strip = (s: string) => s.replace(/\s+/g, '');
 
   for (let i = 0; i < pageTexts.length; i++) {
+    if (isTableOfContentsPage(pageTexts[i], i)) continue;
     const strippedPage = strip(pageTexts[i]);
     
     // Check if all keywords exist in order within the stripped text
@@ -686,6 +718,18 @@ function parseTableSolvencyCommon(pageTexts: string[]): ExtractedTable<TableRow>
       // Combine current page and next page to ensure we don't miss rows split across pages
       subText = pageTexts[i] + (pageTexts[i+1] || "");
       break;
+    }
+  }
+
+  if (foundPage === -1) {
+    for (let i = 0; i < pageTexts.length; i++) {
+      if (isTableOfContentsPage(pageTexts[i], i)) continue;
+      const p = pageTexts[i];
+      if (p.includes("기본자본") && p.includes("보완자본") && (p.includes("경과조치") || p.includes("지급여력"))) {
+        foundPage = i + 1;
+        subText = pageTexts[i] + (pageTexts[i+1] || "");
+        break;
+      }
     }
   }
 
@@ -718,6 +762,7 @@ function parseTableSolvencySelective(pageTexts: string[]): ExtractedTable<TableR
   const strip = (s: string) => s.replace(/\s+/g, '');
 
   for (let i = 0; i < pageTexts.length; i++) {
+    if (isTableOfContentsPage(pageTexts[i], i)) continue;
     const strippedPage = strip(pageTexts[i]);
     
     // Check if all keywords exist in order within the stripped text
@@ -739,6 +784,20 @@ function parseTableSolvencySelective(pageTexts: string[]): ExtractedTable<TableR
     }
   }
 
+  if (foundPage === -1) {
+    const fallbackKeywords = ["선택적용", "자본감소", "가용자본 증가액", "경과조치 적용액", "감소분"];
+    for (let i = 0; i < pageTexts.length; i++) {
+      if (isTableOfContentsPage(pageTexts[i], i)) continue;
+      const p = pageTexts[i];
+      const hasAny = fallbackKeywords.some(kw => p.includes(kw));
+      if (hasAny && (p.includes("기본자본") || p.includes("지급여력") || p.includes("경과조치"))) {
+        foundPage = i + 1;
+        subText = pageTexts[i] + (pageTexts[i+1] || "");
+        break;
+      }
+    }
+  }
+
   if (foundPage === -1) return { data: [], page: null };
 
   // Define expected rows for Table 3 (Selective)
@@ -753,13 +812,7 @@ function parseTableSolvencySelective(pageTexts: string[]): ExtractedTable<TableR
 
   const rows = extractRows(subText, rowCategories);
   
-  // Check if "자본감소분 경과조치 적용금액" exists in the extracted rows
-  const hasAppliedAmount = rows.some(row => row.category === "자본감소분 경과조치 적용금액");
-  
-  if (!hasAppliedAmount) {
-    return { data: [], page: null };
-  }
-
+  // Return foundPage so it gets merged and sent to Gemini, even if local extraction rows are empty
   return { data: rows, page: foundPage };
 }
 
@@ -782,6 +835,7 @@ function parseTableLossRatio(pageTexts: string[]): ExtractedTable<ComparisonTabl
   // 1. Find the section page
   let sectionPageIndex = -1;
   for (let i = 0; i < pageTexts.length; i++) {
+    if (isTableOfContentsPage(pageTexts[i], i)) continue;
     if (strip(pageTexts[i]).includes(strippedSectionMarker)) {
       sectionPageIndex = i;
       break;
@@ -794,6 +848,7 @@ function parseTableLossRatio(pageTexts: string[]): ExtractedTable<ComparisonTabl
 
   // 2. Search for the table marker from the section page onwards
   for (let i = sectionPageIndex; i < pageTexts.length; i++) {
+    if (isTableOfContentsPage(pageTexts[i], i)) continue;
     const strippedPage = strip(pageTexts[i]);
     if (strippedPage.includes(strippedTableMarker)) {
       // Check if subSectionMarker exists before the table marker
@@ -864,6 +919,7 @@ function parseTableRiskPremium(pageTexts: string[]): ExtractedTable<any> {
   const strip = (s: string) => s.replace(/\s+/g, '');
 
   for (let i = 0; i < pageTexts.length; i++) {
+    if (isTableOfContentsPage(pageTexts[i], i)) continue;
     const strippedPage = strip(pageTexts[i]);
     
     let lastIndex = -1;
@@ -900,13 +956,43 @@ function extractRows(text: string, categories: string[]): TableRow[] {
     return val.replace(/[^0-9.-]/g, '');
   };
 
+  const synonyms: Record<string, string[]> = {
+    "지급여력비율 (%)": ["지급여력비율", "지급여력 비율", "K-ICS비율", "K-ICS 비율", "지급여력비율(%)", "지급여력 비율(%)"],
+    "지급여력비율": ["지급여력비율", "지급여력 비율", "K-ICS비율", "K-ICS 비율"],
+    "지급여력금액": ["가용자본", "가용 자본", "지급여력금액", "지급여력 금액", "가용 가용자본"],
+    "기본자본": ["기본자본", "기본가용자본", "기본 자본", "기본 가용자본", "Tier 1", "Tier1"],
+    "보완자본": ["보완자본", "보완가용자본", "보완 자본", "보완 가용자본", "Tier 2", "Tier2"],
+    "지급여력기준금액": ["요구자본", "요구 자본", "지급여력기준금액", "지급여력 기준금액"],
+    "자본감소분 경과조치 적용금액": [
+      "자본감소분 경과조치 적용금액",
+      "자본감소분 경과조치 적용 금액",
+      "자본감소분에 대한 경과조치 적용금액",
+      "경과조치 적용 자본감소분",
+      "경과조치 적용자본감소분",
+      "경과조치 적용 가용자본 증가액",
+      "가용자본 증가액",
+      "자본감소분 경과조치",
+      "자본감소분 적용금액"
+    ]
+  };
+
   for (const category of categories) {
-    // Try to find the category even if it has extra spaces
-    const normalizedCategory = category.replace(/\s+/g, ' ');
-    const catIndex = normalizedText.indexOf(normalizedCategory);
+    let catIndex = -1;
+    let matchedLength = category.length;
+    
+    const candidates = synonyms[category] || [category];
+    for (const cand of candidates) {
+      const normalizedCand = cand.replace(/\s+/g, ' ');
+      const idx = normalizedText.indexOf(normalizedCand);
+      if (idx !== -1) {
+        catIndex = idx;
+        matchedLength = normalizedCand.length;
+        break;
+      }
+    }
     
     if (catIndex !== -1) {
-      const lineAfterCat = normalizedText.substring(catIndex + normalizedCategory.length, catIndex + normalizedCategory.length + 150);
+      const lineAfterCat = normalizedText.substring(catIndex + matchedLength, catIndex + matchedLength + 150);
       const matches = lineAfterCat.match(numberPattern);
       if (matches && matches.length >= 2) {
         rows.push({

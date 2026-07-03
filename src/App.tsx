@@ -63,6 +63,71 @@ export default function App() {
            data.table5.page !== null;
   };
 
+  // Generate merged PDF for 1~6 items
+  const generateMergedBuffer = async (result: ExtractedData): Promise<ArrayBuffer | undefined> => {
+    try {
+      // If all 1~6 items failed to extract, do not generate the merged PDF
+      const hasAnyPage = result.table1.page !== null ||
+                         result.table2.page !== null ||
+                         result.table3.page !== null ||
+                         result.table4.page !== null ||
+                         result.table5.page !== null;
+                         
+      if (!hasAnyPage) {
+        return undefined;
+      }
+
+      const pages = new Set<number>();
+      pages.add(1); // Page 1 for company name/title
+      
+      if (extractionOptions.extractSolvency) {
+        if (result.table1.page) {
+          for (let p = -2; p <= 4; p++) {
+            const pageNum = result.table1.page + p;
+            if (pageNum >= 1 && pageNum <= result.numPages) pages.add(pageNum);
+          }
+        }
+        if (result.table2.page) {
+          for (let p = -2; p <= 4; p++) {
+            const pageNum = result.table2.page + p;
+            if (pageNum >= 1 && pageNum <= result.numPages) pages.add(pageNum);
+          }
+        }
+        if (result.table3.page) {
+          for (let p = -2; p <= 2; p++) {
+            const pageNum = result.table3.page + p;
+            if (pageNum >= 1 && pageNum <= result.numPages) pages.add(pageNum);
+          }
+        }
+      }
+      if (extractionOptions.extractComparison) {
+        if (result.table4.page) {
+          for (let p = -1; p <= 2; p++) {
+            const pageNum = result.table4.page + p;
+            if (pageNum >= 1 && pageNum <= result.numPages) pages.add(pageNum);
+          }
+        }
+      }
+      if (extractionOptions.extractRiskPremium) {
+        if (result.table5.page) {
+          for (let p = -1; p <= 7; p++) {
+            const pageNum = result.table5.page + p;
+            if (pageNum >= 1 && pageNum <= result.numPages) pages.add(pageNum);
+          }
+        }
+      }
+
+      const sortedPages = Array.from(pages).filter(p => p >= 1 && p <= result.numPages).sort((a, b) => a - b);
+      if (sortedPages.length > 0) {
+        const mergedPdf = await mergePdfPages(result.originalBuffer, sortedPages);
+        return mergedPdf.buffer;
+      }
+    } catch (e) {
+      console.warn("Failed to generate merged PDF buffer", e);
+    }
+    return undefined;
+  };
+
   const resetAll = () => {
     if (window.confirm('모든 데이터와 설정을 초기화하시겠습니까?')) {
       setUrlInput('');
@@ -139,53 +204,15 @@ export default function App() {
           const result = await extractTextFromUrl(url);
           result.url = url;
           
+          // Generate merged PDF for 1~6 items
+          const mergedBuffer = await generateMergedBuffer(result);
+          result.mergedBuffer = mergedBuffer;
+          
           setResults(prev => [...prev, result]);
 
           // Gemini Extraction (Conditional)
           if (processingMode === 'full' && !result.error) {
             await runGeminiExtraction(result);
-          } else if (processingMode === 'analysis' && !result.error) {
-            // Even in analysis mode, we should generate mergedBuffer if possible
-            const isFast = isMergable(result);
-            
-            if (isFast) {
-              const pages = new Set<number>();
-              pages.add(1);
-              if (extractionOptions.extractSolvency) {
-                if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
-                if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
-                if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
-              }
-              if (extractionOptions.extractComparison) {
-                if (result.table4.page) { pages.add(result.table4.page); pages.add(result.table4.page + 1); }
-              }
-              if (extractionOptions.extractRiskPremium) {
-                if (result.table5.page) {
-                  for (let p = 0; p <= 6; p++) {
-                    if (result.table5.page + p <= result.numPages) {
-                      pages.add(result.table5.page + p);
-                    }
-                  }
-                }
-              }
-              const sortedPages = Array.from(pages).sort((a, b) => a - b);
-              try {
-                const mergedPdf = await mergePdfPages(result.originalBuffer, sortedPages);
-                setResults(prev => {
-                  const newResults = [...prev];
-                  const targetIndex = newResults.findIndex(r => r.id === result.id);
-                  if (targetIndex !== -1) {
-                    newResults[targetIndex] = {
-                      ...newResults[targetIndex],
-                      mergedBuffer: mergedPdf.buffer
-                    };
-                  }
-                  return newResults;
-                });
-              } catch (e) {
-                console.warn("Failed to create merged PDF in analysis mode", e);
-              }
-            }
           }
         } catch (err) {
           console.error(`Error processing ${url}:`, err);
@@ -252,52 +279,14 @@ export default function App() {
     try {
       const result = await extractTextFromPdf(file);
       
+      // Generate merged PDF for 1~6 items
+      const mergedBuffer = await generateMergedBuffer(result);
+      result.mergedBuffer = mergedBuffer;
+      
       setResults(prev => [...prev, result]);
       
       if (processingMode === 'full' && !result.error) {
         await runGeminiExtraction(result);
-      } else if (processingMode === 'analysis' && !result.error) {
-        // Even in analysis mode, generate mergedBuffer for FAST documents
-        const isFast = isMergable(result);
-
-        if (isFast) {
-          const pages = new Set<number>();
-          pages.add(1);
-          if (extractionOptions.extractSolvency) {
-            if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
-            if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
-            if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
-          }
-          if (extractionOptions.extractComparison) {
-            if (result.table4.page) { pages.add(result.table4.page); pages.add(result.table4.page + 1); }
-          }
-          if (extractionOptions.extractRiskPremium) {
-            if (result.table5.page) {
-              for (let p = 0; p <= 6; p++) {
-                if (result.table5.page + p <= result.numPages) {
-                  pages.add(result.table5.page + p);
-                }
-              }
-            }
-          }
-          const sortedPages = Array.from(pages).sort((a, b) => a - b);
-          try {
-            const mergedPdf = await mergePdfPages(result.originalBuffer, sortedPages);
-            setResults(prev => {
-              const newResults = [...prev];
-              const targetIndex = newResults.findIndex(r => r.id === result.id);
-              if (targetIndex !== -1) {
-                newResults[targetIndex] = {
-                  ...newResults[targetIndex],
-                  mergedBuffer: mergedPdf.buffer
-                };
-              }
-              return newResults;
-            });
-          } catch (e) {
-            console.warn("Failed to create merged PDF in analysis mode", e);
-          }
-        }
       }
     } catch (err) {
       console.error(err);
@@ -325,50 +314,22 @@ export default function App() {
     let retryCount = 0;
 
     const attemptExtraction = async (): Promise<void> => {
-      let mergedBuffer: ArrayBuffer | undefined = undefined;
       try {
-        const isFast = isMergable(result);
         let pdfBase64 = '';
 
-        // If we already failed once and are retrying, or if it's not fast mode, use original
-        if (isFast && retryCount === 0) {
-          console.log(`[FAST] Merging relevant pages for ${result.companyName}...`);
-          const pages = new Set<number>();
-          pages.add(1);
-          if (extractionOptions.extractSolvency) {
-            if (result.table1.page) { pages.add(result.table1.page); pages.add(result.table1.page + 1); }
-            if (result.table2.page) { pages.add(result.table2.page); pages.add(result.table2.page + 1); }
-            if (result.table3.page) { pages.add(result.table3.page); pages.add(result.table3.page + 1); }
-          }
-          if (extractionOptions.extractComparison) {
-            if (result.table4.page) { pages.add(result.table4.page); pages.add(result.table4.page + 1); }
-          }
-          if (extractionOptions.extractRiskPremium) {
-            if (result.table5.page) {
-              for (let p = 0; p <= 6; p++) {
-                if (result.table5.page + p <= result.numPages) {
-                  pages.add(result.table5.page + p);
-                }
-              }
-            }
-          }
-
-          const sortedPages = Array.from(pages).sort((a, b) => a - b);
-          try {
-            const mergedPdf = await mergePdfPages(result.originalBuffer, sortedPages);
-            mergedBuffer = mergedPdf.buffer;
-            pdfBase64 = await arrayBufferToBase64(mergedBuffer);
-          } catch (mergeErr) {
-            console.warn("Merge failed, falling back to original PDF", mergeErr);
-            pdfBase64 = await arrayBufferToBase64(result.originalBuffer);
-          }
+        if (result.numPages > 0 && result.numPages <= 30) {
+          console.log(`PDF is small (${result.numPages} pages). Sending complete original PDF for 100% accuracy...`);
+          pdfBase64 = await arrayBufferToBase64(result.originalBuffer);
+        } else if (result.mergedBuffer && result.mergedBuffer.byteLength > 0) {
+          console.log(`Using merged PDF for ${result.companyName || result.fileName}...`);
+          pdfBase64 = await arrayBufferToBase64(result.mergedBuffer);
         } else {
-          // NORMAL mode or Fallback: Send original PDF as is
-          console.log(`[${retryCount > 0 ? 'RETRY/FALLBACK' : 'NORMAL'}] Sending original PDF for ${result.companyName || result.fileName}...`);
+          // All items failed to extract and no merged PDF was generated: fallback to sending original PDF
+          console.log(`Sending original PDF for ${result.companyName || result.fileName}...`);
           pdfBase64 = await arrayBufferToBase64(result.originalBuffer);
         }
 
-        const geminiResult = await extractTablesWithGemini(pdfBase64, 'application/pdf', extractionOptions);
+        const geminiResult = await extractTablesWithGemini(pdfBase64, 'application/pdf', extractionOptions, result.fullText);
         
         // Update the specific result with the gemini data using ID
         setResults(prev => {
@@ -378,7 +339,6 @@ export default function App() {
             newResults[targetIndex] = {
               ...newResults[targetIndex],
               geminiData: geminiResult,
-              mergedBuffer: mergedBuffer // This ensures the buffer is saved to the state
             };
           }
           return newResults;
@@ -424,7 +384,6 @@ export default function App() {
             newResults[targetIndex] = {
               ...newResults[targetIndex],
               error: `AI 추출 실패: ${errorMessage}`,
-              mergedBuffer: mergedBuffer // Preserve mergedBuffer even on failure
             };
           }
           return newResults;
@@ -860,210 +819,216 @@ export default function App() {
           {/* Aggregated Tables Section */}
           {results.length > 0 && (
             <div className="space-y-8 mb-12">
-              <div className="border-t pt-8">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-xl font-bold flex items-center gap-2">
-                    <Table className="text-blue-600" size={20} />
-                    1. 보험금 예실차비율 통합 테이블
-                  </h2>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => copyToClipboard(generateComparisonTxt(), 'comparison')}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-lg text-[10px] font-bold transition-all border border-gray-200"
-                    >
-                      {copyStatus === 'comparison' ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}
-                      {copyStatus === 'comparison' ? '복사됨' : '클립보드 복사'}
-                    </button>
-                    <button
-                      onClick={() => downloadAsTxt(generateComparisonTxt(), '보험금_예실차비율_통합.txt')}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg text-[10px] font-bold transition-all border border-blue-100"
-                    >
-                      <Download size={14} />
-                      TXT 다운로드
-                    </button>
+              {extractionOptions.extractComparison && (
+                <div className="border-t pt-8">
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-xl font-bold flex items-center gap-2">
+                      <Table className="text-blue-600" size={20} />
+                      1. 보험금 예실차비율 통합 테이블
+                    </h2>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => copyToClipboard(generateComparisonTxt(), 'comparison')}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-lg text-[10px] font-bold transition-all border border-gray-200"
+                      >
+                        {copyStatus === 'comparison' ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}
+                        {copyStatus === 'comparison' ? '복사됨' : '클립보드 복사'}
+                      </button>
+                      <button
+                        onClick={() => downloadAsTxt(generateComparisonTxt(), '보험금_예실차비율_통합.txt')}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg text-[10px] font-bold transition-all border border-blue-100"
+                      >
+                        <Download size={14} />
+                        TXT 다운로드
+                      </button>
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
+                    <table className="w-full text-[11px] text-left border-collapse">
+                      <thead>
+                        <tr className="bg-gray-50 border-b border-gray-100">
+                          <th className="p-2 font-bold border-r border-gray-100">회사명</th>
+                          <th className="p-2 font-bold border-r border-gray-100">구분</th>
+                          <th className="p-2 font-bold border-r border-gray-100">예상손해율</th>
+                          <th className="p-2 font-bold border-r border-gray-100">실제손해율</th>
+                          <th className="p-2 font-bold">보험금예실차비율</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-50">
+                        {aggregatedComparison.length > 0 ? (
+                          aggregatedComparison.map((row, idx) => (
+                            <tr key={idx} className="hover:bg-blue-50/30 transition-colors">
+                              <td className="p-2 border-r border-gray-100 font-medium">{row.companyName}</td>
+                              <td className="p-2 border-r border-gray-100">{row.category}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.expectedLossRatio}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.actualLossRatio}</td>
+                              <td className="p-2 text-right font-bold text-blue-600">{row.differenceRatio}</td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={5} className="p-8 text-center text-gray-400 italic">
+                              {isLoading ? "데이터 분석 중..." : "추출된 데이터가 없습니다."}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
-                <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
-                  <table className="w-full text-[11px] text-left border-collapse">
-                    <thead>
-                      <tr className="bg-gray-50 border-b border-gray-100">
-                        <th className="p-2 font-bold border-r border-gray-100">회사명</th>
-                        <th className="p-2 font-bold border-r border-gray-100">구분</th>
-                        <th className="p-2 font-bold border-r border-gray-100">예상손해율</th>
-                        <th className="p-2 font-bold border-r border-gray-100">실제손해율</th>
-                        <th className="p-2 font-bold">보험금예실차비율</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-50">
-                      {aggregatedComparison.length > 0 ? (
-                        aggregatedComparison.map((row, idx) => (
-                          <tr key={idx} className="hover:bg-blue-50/30 transition-colors">
-                            <td className="p-2 border-r border-gray-100 font-medium">{row.companyName}</td>
-                            <td className="p-2 border-r border-gray-100">{row.category}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.expectedLossRatio}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.actualLossRatio}</td>
-                            <td className="p-2 text-right font-bold text-blue-600">{row.differenceRatio}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={5} className="p-8 text-center text-gray-400 italic">
-                            {isLoading ? "데이터 분석 중..." : "추출된 데이터가 없습니다."}
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+              )}
 
-              <div className="mt-8">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-xl font-bold flex items-center gap-2">
-                    <Table className="text-blue-600" size={20} />
-                    2. 지급여력비율 통합 테이블
-                  </h2>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => copyToClipboard(generateSolvencyTxt(), 'solvency')}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-lg text-[10px] font-bold transition-all border border-gray-200"
-                    >
-                      {copyStatus === 'solvency' ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}
-                      {copyStatus === 'solvency' ? '복사됨' : '클립보드 복사'}
-                    </button>
-                    <button
-                      onClick={() => downloadAsTxt(generateSolvencyTxt(), '지급여력비율_통합.txt')}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg text-[10px] font-bold transition-all border border-blue-100"
-                    >
-                      <Download size={14} />
-                      TXT 다운로드
-                    </button>
+              {extractionOptions.extractSolvency && (
+                <div className="border-t pt-8">
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-xl font-bold flex items-center gap-2">
+                      <Table className="text-blue-600" size={20} />
+                      2. 지급여력비율 통합 테이블
+                    </h2>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => copyToClipboard(generateSolvencyTxt(), 'solvency')}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-lg text-[10px] font-bold transition-all border border-gray-200"
+                      >
+                        {copyStatus === 'solvency' ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}
+                        {copyStatus === 'solvency' ? '복사됨' : '클립보드 복사'}
+                      </button>
+                      <button
+                        onClick={() => downloadAsTxt(generateSolvencyTxt(), '지급여력비율_통합.txt')}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg text-[10px] font-bold transition-all border border-blue-100"
+                      >
+                        <Download size={14} />
+                        TXT 다운로드
+                      </button>
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
+                    <table className="w-full text-[10px] text-left border-collapse min-w-[1200px]">
+                      <thead>
+                        <tr className="bg-gray-50 border-b border-gray-100">
+                          <th className="p-2 font-bold border-r border-gray-100 sticky left-0 bg-gray-50 z-10">회사명</th>
+                          <th className="p-2 font-bold border-r border-gray-100">경과조치구분</th>
+                          <th className="p-2 font-bold border-r border-gray-100">지급여력비율</th>
+                          <th className="p-2 font-bold border-r border-gray-100">지급여력금액</th>
+                          <th className="p-2 font-bold border-r border-gray-100">기본자본</th>
+                          <th className="p-2 font-bold border-r border-gray-100">보완자본</th>
+                          <th className="p-2 font-bold border-r border-gray-100">지급여력기준금액</th>
+                          <th className="p-2 font-bold">자본감소분 경과조치 적용금액</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-50">
+                        {aggregatedSolvency.length > 0 ? (
+                          aggregatedSolvency.map((row, idx) => (
+                            <tr key={idx} className="hover:bg-blue-50/30 transition-colors">
+                              <td className="p-2 border-r border-gray-100 font-medium sticky left-0 bg-white z-10">{row.companyName}</td>
+                              <td className="p-2 border-r border-gray-100">{row.measureType}</td>
+                              <td className="p-2 border-r border-gray-100 text-right font-bold text-blue-600">{row.solvencyRatio}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.solvencyAmount}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.basicCapital}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.supplementaryCapital}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.solvencyRequiredAmount}</td>
+                              <td className="p-2 text-right">{row.appliedCapitalReductionAmount}</td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={8} className="p-8 text-center text-gray-400 italic">
+                              {isLoading ? "데이터 분석 중..." : "추출된 데이터가 없습니다."}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
-                <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
-                  <table className="w-full text-[10px] text-left border-collapse min-w-[1200px]">
-                    <thead>
-                      <tr className="bg-gray-50 border-b border-gray-100">
-                        <th className="p-2 font-bold border-r border-gray-100 sticky left-0 bg-gray-50 z-10">회사명</th>
-                        <th className="p-2 font-bold border-r border-gray-100">경과조치구분</th>
-                        <th className="p-2 font-bold border-r border-gray-100">지급여력비율</th>
-                        <th className="p-2 font-bold border-r border-gray-100">지급여력금액</th>
-                        <th className="p-2 font-bold border-r border-gray-100">기본자본</th>
-                        <th className="p-2 font-bold border-r border-gray-100">보완자본</th>
-                        <th className="p-2 font-bold border-r border-gray-100">지급여력기준금액</th>
-                        <th className="p-2 font-bold">자본감소분 경과조치 적용금액</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-50">
-                      {aggregatedSolvency.length > 0 ? (
-                        aggregatedSolvency.map((row, idx) => (
-                          <tr key={idx} className="hover:bg-blue-50/30 transition-colors">
-                            <td className="p-2 border-r border-gray-100 font-medium sticky left-0 bg-white z-10">{row.companyName}</td>
-                            <td className="p-2 border-r border-gray-100">{row.measureType}</td>
-                            <td className="p-2 border-r border-gray-100 text-right font-bold text-blue-600">{row.solvencyRatio}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.solvencyAmount}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.basicCapital}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.supplementaryCapital}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.solvencyRequiredAmount}</td>
-                            <td className="p-2 text-right">{row.appliedCapitalReductionAmount}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={8} className="p-8 text-center text-gray-400 italic">
-                            {isLoading ? "데이터 분석 중..." : "추출된 데이터가 없습니다."}
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+              )}
 
-              <div className="mt-8">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-xl font-bold flex items-center gap-2">
-                    <Table className="text-blue-600" size={20} />
-                    3. 위험보험료 대비 예상보험금 통합 테이블
-                  </h2>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => copyToClipboard(generateRiskPremiumTxt(), 'riskPremium')}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-lg text-[10px] font-bold transition-all border border-gray-200"
-                    >
-                      {copyStatus === 'riskPremium' ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}
-                      {copyStatus === 'riskPremium' ? '복사됨' : '클립보드 복사'}
-                    </button>
-                    <button
-                      onClick={() => downloadAsTxt(generateRiskPremiumTxt(), '위험보험료_대비_예상보험금_통합.txt')}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg text-[10px] font-bold transition-all border border-blue-100"
-                    >
-                      <Download size={14} />
-                      TXT 다운로드
-                    </button>
+              {extractionOptions.extractRiskPremium && (
+                <div className="border-t pt-8">
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-xl font-bold flex items-center gap-2">
+                      <Table className="text-blue-600" size={20} />
+                      3. 위험보험료 대비 예상보험금 통합 테이블
+                    </h2>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => copyToClipboard(generateRiskPremiumTxt(), 'riskPremium')}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-lg text-[10px] font-bold transition-all border border-gray-200"
+                      >
+                        {copyStatus === 'riskPremium' ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}
+                        {copyStatus === 'riskPremium' ? '복사됨' : '클립보드 복사'}
+                      </button>
+                      <button
+                        onClick={() => downloadAsTxt(generateRiskPremiumTxt(), '위험보험료_대비_예상보험금_통합.txt')}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg text-[10px] font-bold transition-all border border-blue-100"
+                      >
+                        <Download size={14} />
+                        TXT 다운로드
+                      </button>
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
+                    <table className="w-full text-[10px] text-left border-collapse min-w-[1800px]">
+                      <thead>
+                        <tr className="bg-gray-50 border-b border-gray-100">
+                          <th className="p-2 font-bold border-r border-gray-100 sticky left-0 bg-gray-50 z-10">회사명</th>
+                          <th className="p-2 font-bold border-r border-gray-100">연도</th>
+                          <th className="p-2 font-bold border-r border-gray-100">경과기간</th>
+                          <th className="p-2 font-bold border-r border-gray-100">1년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">2년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">3년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">4년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">5년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">6년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">7년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">8년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">9년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">10년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">11년-15년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">16년-20년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">21년-25년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">26년-30년</th>
+                          <th className="p-2 font-bold border-r border-gray-100">30년이후</th>
+                          <th className="p-2 font-bold">현재가치</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-50">
+                        {aggregatedRiskPremium.length > 0 ? (
+                          aggregatedRiskPremium.map((row, idx) => (
+                            <tr key={idx} className="hover:bg-blue-50/30 transition-colors">
+                              <td className="p-2 border-r border-gray-100 font-medium sticky left-0 bg-white z-10">{row.companyName}</td>
+                              <td className="p-2 border-r border-gray-100">{row.year}</td>
+                              <td className="p-2 border-r border-gray-100">{row.category}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y1}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y2}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y3}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y4}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y5}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y6}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y7}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y8}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y9}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y10}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y11_15}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y16_20}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y21_25}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y26_30}</td>
+                              <td className="p-2 border-r border-gray-100 text-right">{row.y30_plus}</td>
+                              <td className="p-2 text-right">{row.presentValue}</td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={19} className="p-8 text-center text-gray-400 italic">
+                              {isLoading ? "데이터 분석 중..." : "추출된 데이터가 없습니다."}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
-                <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
-                  <table className="w-full text-[10px] text-left border-collapse min-w-[1800px]">
-                    <thead>
-                      <tr className="bg-gray-50 border-b border-gray-100">
-                        <th className="p-2 font-bold border-r border-gray-100 sticky left-0 bg-gray-50 z-10">회사명</th>
-                        <th className="p-2 font-bold border-r border-gray-100">연도</th>
-                        <th className="p-2 font-bold border-r border-gray-100">경과기간</th>
-                        <th className="p-2 font-bold border-r border-gray-100">1년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">2년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">3년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">4년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">5년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">6년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">7년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">8년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">9년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">10년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">11년-15년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">16년-20년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">21년-25년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">26년-30년</th>
-                        <th className="p-2 font-bold border-r border-gray-100">30년이후</th>
-                        <th className="p-2 font-bold">현재가치</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-50">
-                      {aggregatedRiskPremium.length > 0 ? (
-                        aggregatedRiskPremium.map((row, idx) => (
-                          <tr key={idx} className="hover:bg-blue-50/30 transition-colors">
-                            <td className="p-2 border-r border-gray-100 font-medium sticky left-0 bg-white z-10">{row.companyName}</td>
-                            <td className="p-2 border-r border-gray-100">{row.year}</td>
-                            <td className="p-2 border-r border-gray-100">{row.category}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y1}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y2}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y3}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y4}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y5}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y6}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y7}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y8}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y9}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y10}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y11_15}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y16_20}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y21_25}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y26_30}</td>
-                            <td className="p-2 border-r border-gray-100 text-right">{row.y30_plus}</td>
-                            <td className="p-2 text-right">{row.presentValue}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={19} className="p-8 text-center text-gray-400 italic">
-                            {isLoading ? "데이터 분석 중..." : "추출된 데이터가 없습니다."}
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+              )}
             </div>
           )}
 
@@ -1139,7 +1104,7 @@ export default function App() {
                       className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-[10px] font-bold transition-all border border-blue-200"
                     >
                       <Download size={14} />
-                      병합 PDF (AI용)
+                      병합 PDF (1~6번 항목)
                     </button>
                   )}
 
@@ -1196,154 +1161,164 @@ export default function App() {
                     </div>
 
                     {/* 2. Table 1 */}
-                    <div className="p-3 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-1.5">
-                          <Table className="text-blue-600" size={16} />
-                          <h3 className="font-bold text-xs">2. 지급여력비율</h3>
-                        </div>
-                        {data.table1.page && (
+                    {extractionOptions.extractSolvency && (
+                      <div className="p-3 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
                           <div className="flex items-center gap-1.5">
-                            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded border border-blue-100">
-                              PAGE {data.table1.page}-{Math.min(data.table1.page + 1, data.numPages)}
-                            </span>
-                            <button
-                              onClick={() => downloadPages(resultIndex, data.table1.page!, 'table1')}
-                              disabled={isDownloading !== null}
-                              className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
-                              title="2페이지 다운로드"
-                            >
-                              {isDownloading === `${resultIndex}-table1` ? (
-                                <Loader2 size={12} className="animate-spin" />
-                              ) : (
-                                <Download size={12} />
-                              )}
-                            </button>
+                            <Table className="text-blue-600" size={16} />
+                            <h3 className="font-bold text-xs">2. 지급여력비율</h3>
                           </div>
-                        )}
+                          {data.table1.page && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded border border-blue-100">
+                                PAGE {data.table1.page}-{Math.min(data.table1.page + 1, data.numPages)}
+                              </span>
+                              <button
+                                onClick={() => downloadPages(resultIndex, data.table1.page!, 'table1')}
+                                disabled={isDownloading !== null}
+                                className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
+                                title="2페이지 다운로드"
+                              >
+                                {isDownloading === `${resultIndex}-table1` ? (
+                                  <Loader2 size={12} className="animate-spin" />
+                                ) : (
+                                  <Download size={12} />
+                                )}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-[9px] font-mono text-gray-400">TABLE_01</span>
                       </div>
-                      <span className="text-[9px] font-mono text-gray-400">TABLE_01</span>
-                    </div>
+                    )}
 
                     {/* 3. Table 2 */}
-                    <div className="p-3 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-1.5">
-                          <Table className="text-blue-600" size={16} />
-                          <h3 className="font-bold text-xs">3. 기본/보완자본</h3>
-                        </div>
-                        {data.table2.page && (
+                    {extractionOptions.extractSolvency && (
+                      <div className="p-3 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
                           <div className="flex items-center gap-1.5">
-                            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded border border-blue-100">
-                              PAGE {data.table2.page}-{Math.min(data.table2.page + 1, data.numPages)}
-                            </span>
-                            <button
-                              onClick={() => downloadPages(resultIndex, data.table2.page!, 'table2')}
-                              disabled={isDownloading !== null}
-                              className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
-                              title="2페이지 다운로드"
-                            >
-                              {isDownloading === `${resultIndex}-table2` ? (
-                                <Loader2 size={12} className="animate-spin" />
-                              ) : (
-                                <Download size={12} />
-                              )}
-                            </button>
+                            <Table className="text-blue-600" size={16} />
+                            <h3 className="font-bold text-xs">3. 기본/보완자본</h3>
                           </div>
-                        )}
+                          {data.table2.page && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded border border-blue-100">
+                                PAGE {data.table2.page}-{Math.min(data.table2.page + 1, data.numPages)}
+                              </span>
+                              <button
+                                onClick={() => downloadPages(resultIndex, data.table2.page!, 'table2')}
+                                disabled={isDownloading !== null}
+                                className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
+                                title="2페이지 다운로드"
+                              >
+                                {isDownloading === `${resultIndex}-table2` ? (
+                                  <Loader2 size={12} className="animate-spin" />
+                                ) : (
+                                  <Download size={12} />
+                                )}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-[9px] font-mono text-gray-400">TABLE_02</span>
                       </div>
-                      <span className="text-[9px] font-mono text-gray-400">TABLE_02</span>
-                    </div>
+                    )}
 
                     {/* 4. Table 3 */}
-                    <div className="p-3 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-1.5">
-                          <Table className="text-blue-600" size={16} />
-                          <h3 className="font-bold text-xs">4. 자본감소분 경과조치</h3>
-                        </div>
-                        {data.table3.page && (
+                    {extractionOptions.extractSolvency && (
+                      <div className="p-3 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
                           <div className="flex items-center gap-1.5">
-                            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded border border-blue-100">
-                              PAGE {data.table3.page}-{Math.min(data.table3.page + 1, data.numPages)}
-                            </span>
-                            <button
-                              onClick={() => downloadPages(resultIndex, data.table3.page!, 'table3')}
-                              disabled={isDownloading !== null}
-                              className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
-                              title="2페이지 다운로드"
-                            >
-                              {isDownloading === `${resultIndex}-table3` ? (
-                                <Loader2 size={12} className="animate-spin" />
-                              ) : (
-                                <Download size={12} />
-                              )}
-                            </button>
+                            <Table className="text-blue-600" size={16} />
+                            <h3 className="font-bold text-xs">4. 자본감소분 경과조치</h3>
                           </div>
-                        )}
+                          {data.table3.page && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded border border-blue-100">
+                                PAGE {data.table3.page}-{Math.min(data.table3.page + 1, data.numPages)}
+                              </span>
+                              <button
+                                onClick={() => downloadPages(resultIndex, data.table3.page!, 'table3')}
+                                disabled={isDownloading !== null}
+                                className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
+                                title="2페이지 다운로드"
+                              >
+                                {isDownloading === `${resultIndex}-table3` ? (
+                                  <Loader2 size={12} className="animate-spin" />
+                                ) : (
+                                  <Download size={12} />
+                                )}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-[9px] font-mono text-gray-400">TABLE_03</span>
                       </div>
-                      <span className="text-[9px] font-mono text-gray-400">TABLE_03</span>
-                    </div>
+                    )}
 
                     {/* 5. Table 4 */}
-                    <div className="p-3 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-1.5">
-                          <Table className="text-blue-600" size={16} />
-                          <h3 className="font-bold text-xs">5. 보험금 예실차비율</h3>
-                        </div>
-                        {data.table4.page && (
+                    {extractionOptions.extractComparison && (
+                      <div className="p-3 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
                           <div className="flex items-center gap-1.5">
-                            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded border border-blue-100">
-                              PAGE {data.table4.page}-{Math.min(data.table4.page + 1, data.numPages)}
-                            </span>
-                            <button
-                              onClick={() => downloadPages(resultIndex, data.table4.page!, 'table4')}
-                              disabled={isDownloading !== null}
-                              className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
-                              title="2페이지 다운로드"
-                            >
-                              {isDownloading === `${resultIndex}-table4` ? (
-                                <Loader2 size={12} className="animate-spin" />
-                              ) : (
-                                <Download size={12} />
-                              )}
-                            </button>
+                            <Table className="text-blue-600" size={16} />
+                            <h3 className="font-bold text-xs">5. 보험금 예실차비율</h3>
                           </div>
-                        )}
+                          {data.table4.page && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded border border-blue-100">
+                                PAGE {data.table4.page}-{Math.min(data.table4.page + 1, data.numPages)}
+                              </span>
+                              <button
+                                onClick={() => downloadPages(resultIndex, data.table4.page!, 'table4')}
+                                disabled={isDownloading !== null}
+                                className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
+                                title="2페이지 다운로드"
+                              >
+                                {isDownloading === `${resultIndex}-table4` ? (
+                                  <Loader2 size={12} className="animate-spin" />
+                                ) : (
+                                  <Download size={12} />
+                                )}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-[9px] font-mono text-gray-400">TABLE_04</span>
                       </div>
-                      <span className="text-[9px] font-mono text-gray-400">TABLE_04</span>
-                    </div>
+                    )}
 
                     {/* 6. Table 5 */}
-                    <div className="p-3 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-1.5">
-                          <Table className="text-blue-600" size={16} />
-                          <h3 className="font-bold text-xs">6. 위험보험료 대비 예상보험금</h3>
-                        </div>
-                        {data.table5.page && (
+                    {extractionOptions.extractRiskPremium && (
+                      <div className="p-3 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
                           <div className="flex items-center gap-1.5">
-                            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded border border-blue-100">
-                              PAGE {data.table5.page}-{Math.min(data.table5.page + 6, data.numPages)}
-                            </span>
-                            <button
-                              onClick={() => downloadPages(resultIndex, data.table5.page!, 'table5')}
-                              disabled={isDownloading !== null}
-                              className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
-                              title="7페이지 다운로드"
-                            >
-                              {isDownloading === `${resultIndex}-table5` ? (
-                                <Loader2 size={12} className="animate-spin" />
-                              ) : (
-                                <Download size={12} />
-                              )}
-                            </button>
+                            <Table className="text-blue-600" size={16} />
+                            <h3 className="font-bold text-xs">6. 위험보험료 대비 예상보험금</h3>
                           </div>
-                        )}
+                          {data.table5.page && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded border border-blue-100">
+                                PAGE {data.table5.page}-{Math.min(data.table5.page + 6, data.numPages)}
+                              </span>
+                              <button
+                                onClick={() => downloadPages(resultIndex, data.table5.page!, 'table5')}
+                                disabled={isDownloading !== null}
+                                className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
+                                title="7페이지 다운로드"
+                              >
+                                {isDownloading === `${resultIndex}-table5` ? (
+                                  <Loader2 size={12} className="animate-spin" />
+                                ) : (
+                                  <Download size={12} />
+                                )}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-[9px] font-mono text-gray-400">TABLE_05</span>
                       </div>
-                      <span className="text-[9px] font-mono text-gray-400">TABLE_05</span>
-                    </div>
+                    )}
                   </section>
 
                   {/* Full Text Section */}
